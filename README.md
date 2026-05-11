@@ -1,6 +1,12 @@
 # Wro
 prepa 8 torneo de wro
 
+| Git                | Name                               |
+| ------------------ | -----------------------------------| 
+|  N/A         | Nestor                             |
+|  N/A               | Victoria                           |
+|  N/A               | Danna                              |
+
 ## Grid detector
 
 El script `grid-detector` ahora acepta dos modos desde terminal:
