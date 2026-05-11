@@ -1,0 +1,27 @@
+CAMERA_ID = 0
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+FPS = 30
+
+OUTPUT_DIR = "captures"
+
+GRID_COMMAND = "get grid"
+EXIT_COMMANDS = {"exit", "quit", "q"}
+PROMPT_TEXT = "Detector de cuadrícula listo para usarse desde terminal."
+
+HOUGH_THRESHOLD = 50
+HOUGH_MIN_LINE_LENGTH = 50
+HOUGH_MAX_LINE_GAP = 10
+INTERSECTION_ROUNDING = 10
+GRID_MIN_INTERSECTIONS = 4
+COLOR_SAMPLE_RADIUS = 15
+REGION_THRESHOLD_MULTIPLIER = 100
+SAVE_LIMIT_SECONDS = 2.0
+CAPTURE_DELAY_SECONDS = 0.05
+
+COLOR_RANGES = {
+    "yellow": ([20, 100, 100], [30, 255, 255]),
+    "blue": ([100, 100, 100], [130, 255, 255]),
+    "green": ([50, 100, 100], [70, 255, 255]),
+    "white": ([0, 0, 200], [180, 50, 255]),
+}
