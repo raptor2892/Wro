@@ -511,3 +511,6 @@ def run_terminal_mode():
 
 if __name__ == "__main__":
     run_terminal_mode()
+
+
+    ## ejecuta este comando en la terminal para hacer el test  printf '%s\n' 'get grid /Users/marcoalejandrogalindo/Desktop/Wro/Vision/test grid detecction/grid1_converted.jpg' 'quit' | /Users/marcoalejandrogalindo/Desktop/Wro/.venv/bin/python "/Users/marcoalejandrogalindo/Desktop/Wro/Vision/grid-detector"
