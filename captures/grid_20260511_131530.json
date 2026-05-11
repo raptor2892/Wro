@@ -1,0 +1,754 @@
+{
+  "timestamp": 1778526930.406112,
+  "source_image": "/Users/marcoalejandrogalindo/Desktop/Wro/Vision/test grid detecction/grid1_converted.jpg",
+  "palette": [
+    {
+      "name": "cluster_0",
+      "center_lab": [
+        231,
+        113,
+        214
+      ]
+    },
+    {
+      "name": "cluster_1",
+      "center_lab": [
+        42,
+        126,
+        131
+      ]
+    },
+    {
+      "name": "cluster_2",
+      "center_lab": [
+        134,
+        103,
+        145
+      ]
+    },
+    {
+      "name": "cluster_3",
+      "center_lab": [
+        98,
+        141,
+        81
+      ]
+    },
+    {
+      "name": "cluster_4",
+      "center_lab": [
+        190,
+        131,
+        136
+      ]
+    }
+  ],
+  "intersections": [
+    [
+      82,
+      100
+    ],
+    [
+      156,
+      85
+    ],
+    [
+      120,
+      92
+    ],
+    [
+      190,
+      79
+    ],
+    [
+      87,
+      134
+    ],
+    [
+      129,
+      125
+    ],
+    [
+      205,
+      109
+    ],
+    [
+      168,
+      117
+    ],
+    [
+      93,
+      177
+    ],
+    [
+      139,
+      165
+    ],
+    [
+      222,
+      144
+    ],
+    [
+      182,
+      154
+    ]
+  ],
+  "colors": [
+    {
+      "row": 0,
+      "col": 0,
+      "position": [
+        0,
+        0
+      ],
+      "x1": 68,
+      "y1": 88,
+      "x2": 96,
+      "y2": 112,
+      "center": [
+        82,
+        100
+      ],
+      "area": 511.0,
+      "color": "cluster_3",
+      "cluster_id": 3
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "position": [
+        1,
+        0
+      ],
+      "x1": 143,
+      "y1": 75,
+      "x2": 170,
+      "y2": 96,
+      "center": [
+        156,
+        85
+      ],
+      "area": 409.5,
+      "color": "cluster_3",
+      "cluster_id": 3
+    },
+    {
+      "row": 0,
+      "col": 1,
+      "position": [
+        1,
+        0
+      ],
+      "x1": 107,
+      "y1": 81,
+      "x2": 134,
+      "y2": 104,
+      "center": [
+        120,
+        92
+      ],
+      "area": 449.5,
+      "color": "cluster_0",
+      "cluster_id": 0
+    },
+    {
+      "row": 0,
+      "col": 2,
+      "position": [
+        2,
+        0
+      ],
+      "x1": 177,
+      "y1": 69,
+      "x2": 204,
+      "y2": 89,
+      "center": [
+        190,
+        79
+      ],
+      "area": 376.5,
+      "color": "cluster_3",
+      "cluster_id": 3
+    },
+    {
+      "row": 1,
+      "col": 0,
+      "position": [
+        0,
+        1
+      ],
+      "x1": 71,
+      "y1": 120,
+      "x2": 103,
+      "y2": 149,
+      "center": [
+        87,
+        134
+      ],
+      "area": 701.0,
+      "color": "cluster_0",
+      "cluster_id": 0
+    },
+    {
+      "row": 1,
+      "col": 1,
+      "position": [
+        1,
+        1
+      ],
+      "x1": 114,
+      "y1": 111,
+      "x2": 145,
+      "y2": 140,
+      "center": [
+        129,
+        125
+      ],
+      "area": 638.0,
+      "color": "cluster_2",
+      "cluster_id": 2
+    },
+    {
+      "row": 1,
+      "col": 2,
+      "position": [
+        2,
+        1
+      ],
+      "x1": 190,
+      "y1": 97,
+      "x2": 221,
+      "y2": 122,
+      "center": [
+        205,
+        109
+      ],
+      "area": 524.5,
+      "color": "cluster_2",
+      "cluster_id": 2
+    },
+    {
+      "row": 1,
+      "col": 2,
+      "position": [
+        2,
+        1
+      ],
+      "x1": 153,
+      "y1": 104,
+      "x2": 184,
+      "y2": 130,
+      "center": [
+        168,
+        117
+      ],
+      "area": 564.5,
+      "color": "cluster_0",
+      "cluster_id": 0
+    },
+    {
+      "row": 2,
+      "col": 0,
+      "position": [
+        0,
+        2
+      ],
+      "x1": 76,
+      "y1": 159,
+      "x2": 111,
+      "y2": 196,
+      "center": [
+        93,
+        177
+      ],
+      "area": 982.0,
+      "color": "cluster_3",
+      "cluster_id": 3
+    },
+    {
+      "row": 2,
+      "col": 1,
+      "position": [
+        1,
+        2
+      ],
+      "x1": 122,
+      "y1": 148,
+      "x2": 157,
+      "y2": 183,
+      "center": [
+        139,
+        165
+      ],
+      "area": 875.5,
+      "color": "cluster_0",
+      "cluster_id": 0
+    },
+    {
+      "row": 2,
+      "col": 2,
+      "position": [
+        2,
+        2
+      ],
+      "x1": 205,
+      "y1": 129,
+      "x2": 239,
+      "y2": 160,
+      "center": [
+        222,
+        144
+      ],
+      "area": 697.5,
+      "color": "cluster_3",
+      "cluster_id": 3
+    },
+    {
+      "row": 2,
+      "col": 2,
+      "position": [
+        2,
+        2
+      ],
+      "x1": 164,
+      "y1": 138,
+      "x2": 200,
+      "y2": 171,
+      "center": [
+        182,
+        154
+      ],
+      "area": 802.0,
+      "color": "cluster_3",
+      "cluster_id": 3
+    }
+  ],
+  "frame_shape": [
+    219,
+    288,
+    3
+  ],
+  "grid_detected": true,
+  "grid": {
+    "rows": [
+      89,
+      121,
+      160
+    ],
+    "columns": [
+      87,
+      136,
+      193
+    ],
+    "cells": [
+      {
+        "row": 0,
+        "col": 0,
+        "position": [
+          0,
+          0
+        ],
+        "x1": 68,
+        "y1": 88,
+        "x2": 96,
+        "y2": 112,
+        "center": [
+          82,
+          100
+        ],
+        "area": 511.0,
+        "color": "cluster_3",
+        "cluster_id": 3
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "position": [
+          1,
+          0
+        ],
+        "x1": 143,
+        "y1": 75,
+        "x2": 170,
+        "y2": 96,
+        "center": [
+          156,
+          85
+        ],
+        "area": 409.5,
+        "color": "cluster_3",
+        "cluster_id": 3
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "position": [
+          1,
+          0
+        ],
+        "x1": 107,
+        "y1": 81,
+        "x2": 134,
+        "y2": 104,
+        "center": [
+          120,
+          92
+        ],
+        "area": 449.5,
+        "color": "cluster_0",
+        "cluster_id": 0
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "position": [
+          2,
+          0
+        ],
+        "x1": 177,
+        "y1": 69,
+        "x2": 204,
+        "y2": 89,
+        "center": [
+          190,
+          79
+        ],
+        "area": 376.5,
+        "color": "cluster_3",
+        "cluster_id": 3
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "position": [
+          0,
+          1
+        ],
+        "x1": 71,
+        "y1": 120,
+        "x2": 103,
+        "y2": 149,
+        "center": [
+          87,
+          134
+        ],
+        "area": 701.0,
+        "color": "cluster_0",
+        "cluster_id": 0
+      },
+      {
+        "row": 1,
+        "col": 1,
+        "position": [
+          1,
+          1
+        ],
+        "x1": 114,
+        "y1": 111,
+        "x2": 145,
+        "y2": 140,
+        "center": [
+          129,
+          125
+        ],
+        "area": 638.0,
+        "color": "cluster_2",
+        "cluster_id": 2
+      },
+      {
+        "row": 1,
+        "col": 2,
+        "position": [
+          2,
+          1
+        ],
+        "x1": 190,
+        "y1": 97,
+        "x2": 221,
+        "y2": 122,
+        "center": [
+          205,
+          109
+        ],
+        "area": 524.5,
+        "color": "cluster_2",
+        "cluster_id": 2
+      },
+      {
+        "row": 1,
+        "col": 2,
+        "position": [
+          2,
+          1
+        ],
+        "x1": 153,
+        "y1": 104,
+        "x2": 184,
+        "y2": 130,
+        "center": [
+          168,
+          117
+        ],
+        "area": 564.5,
+        "color": "cluster_0",
+        "cluster_id": 0
+      },
+      {
+        "row": 2,
+        "col": 0,
+        "position": [
+          0,
+          2
+        ],
+        "x1": 76,
+        "y1": 159,
+        "x2": 111,
+        "y2": 196,
+        "center": [
+          93,
+          177
+        ],
+        "area": 982.0,
+        "color": "cluster_3",
+        "cluster_id": 3
+      },
+      {
+        "row": 2,
+        "col": 1,
+        "position": [
+          1,
+          2
+        ],
+        "x1": 122,
+        "y1": 148,
+        "x2": 157,
+        "y2": 183,
+        "center": [
+          139,
+          165
+        ],
+        "area": 875.5,
+        "color": "cluster_0",
+        "cluster_id": 0
+      },
+      {
+        "row": 2,
+        "col": 2,
+        "position": [
+          2,
+          2
+        ],
+        "x1": 205,
+        "y1": 129,
+        "x2": 239,
+        "y2": 160,
+        "center": [
+          222,
+          144
+        ],
+        "area": 697.5,
+        "color": "cluster_3",
+        "cluster_id": 3
+      },
+      {
+        "row": 2,
+        "col": 2,
+        "position": [
+          2,
+          2
+        ],
+        "x1": 164,
+        "y1": 138,
+        "x2": 200,
+        "y2": 171,
+        "center": [
+          182,
+          154
+        ],
+        "area": 802.0,
+        "color": "cluster_3",
+        "cluster_id": 3
+      }
+    ],
+    "matrix": [
+      [
+        {
+          "row": 0,
+          "col": 0,
+          "position": [
+            0,
+            0
+          ],
+          "x1": 68,
+          "y1": 88,
+          "x2": 96,
+          "y2": 112,
+          "center": [
+            82,
+            100
+          ],
+          "area": 511.0,
+          "color": "cluster_3",
+          "cluster_id": 3
+        },
+        {
+          "row": 0,
+          "col": 1,
+          "position": [
+            1,
+            0
+          ],
+          "x1": 107,
+          "y1": 81,
+          "x2": 134,
+          "y2": 104,
+          "center": [
+            120,
+            92
+          ],
+          "area": 449.5,
+          "color": "cluster_0",
+          "cluster_id": 0
+        },
+        {
+          "row": 0,
+          "col": 2,
+          "position": [
+            2,
+            0
+          ],
+          "x1": 177,
+          "y1": 69,
+          "x2": 204,
+          "y2": 89,
+          "center": [
+            190,
+            79
+          ],
+          "area": 376.5,
+          "color": "cluster_3",
+          "cluster_id": 3
+        }
+      ],
+      [
+        {
+          "row": 1,
+          "col": 0,
+          "position": [
+            0,
+            1
+          ],
+          "x1": 71,
+          "y1": 120,
+          "x2": 103,
+          "y2": 149,
+          "center": [
+            87,
+            134
+          ],
+          "area": 701.0,
+          "color": "cluster_0",
+          "cluster_id": 0
+        },
+        {
+          "row": 1,
+          "col": 1,
+          "position": [
+            1,
+            1
+          ],
+          "x1": 114,
+          "y1": 111,
+          "x2": 145,
+          "y2": 140,
+          "center": [
+            129,
+            125
+          ],
+          "area": 638.0,
+          "color": "cluster_2",
+          "cluster_id": 2
+        },
+        {
+          "row": 1,
+          "col": 2,
+          "position": [
+            2,
+            1
+          ],
+          "x1": 153,
+          "y1": 104,
+          "x2": 184,
+          "y2": 130,
+          "center": [
+            168,
+            117
+          ],
+          "area": 564.5,
+          "color": "cluster_0",
+          "cluster_id": 0
+        }
+      ],
+      [
+        {
+          "row": 2,
+          "col": 0,
+          "position": [
+            0,
+            2
+          ],
+          "x1": 76,
+          "y1": 159,
+          "x2": 111,
+          "y2": 196,
+          "center": [
+            93,
+            177
+          ],
+          "area": 982.0,
+          "color": "cluster_3",
+          "cluster_id": 3
+        },
+        {
+          "row": 2,
+          "col": 1,
+          "position": [
+            1,
+            2
+          ],
+          "x1": 122,
+          "y1": 148,
+          "x2": 157,
+          "y2": 183,
+          "center": [
+            139,
+            165
+          ],
+          "area": 875.5,
+          "color": "cluster_0",
+          "cluster_id": 0
+        },
+        {
+          "row": 2,
+          "col": 2,
+          "position": [
+            2,
+            2
+          ],
+          "x1": 164,
+          "y1": 138,
+          "x2": 200,
+          "y2": 171,
+          "center": [
+            182,
+            154
+          ],
+          "area": 802.0,
+          "color": "cluster_3",
+          "cluster_id": 3
+        }
+      ]
+    ]
+  },
+  "saved_image": "captures/grid_20260511_131530.jpg"
+}

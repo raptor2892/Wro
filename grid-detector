@@ -1,0 +1,300 @@
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from constants import (
+    CAPTURE_DELAY_SECONDS,
+    CAMERA_ID,
+    COLOR_RANGES,
+    COLOR_SAMPLE_RADIUS,
+    EXIT_COMMANDS,
+    FRAME_HEIGHT,
+    FRAME_WIDTH,
+    FPS,
+    GRID_COMMAND,
+    GRID_MIN_INTERSECTIONS,
+    HOUGH_MAX_LINE_GAP,
+    HOUGH_MIN_LINE_LENGTH,
+    HOUGH_THRESHOLD,
+    INTERSECTION_ROUNDING,
+    OUTPUT_DIR,
+    PROMPT_TEXT,
+    REGION_THRESHOLD_MULTIPLIER,
+    SAVE_LIMIT_SECONDS,
+    WINDOW_NAME,
+    WINDOW_DISPLAY_MS,
+)
+
+
+class GridDetector:
+    def __init__(self, camera_id=CAMERA_ID):
+        self.cap = cv2.VideoCapture(camera_id)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        self.cap.set(cv2.CAP_PROP_FPS, FPS)
+        self.output_dir = Path(OUTPUT_DIR)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.last_save_time = 0.0
+
+        self.color_ranges = {
+            name: (np.array(lower), np.array(upper))
+            for name, (lower, upper) in COLOR_RANGES.items()
+        }
+
+    def detect_grid_lines(self, frame):
+        """Detecta las líneas de la cuadrícula."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        lines = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=HOUGH_THRESHOLD,
+            minLineLength=HOUGH_MIN_LINE_LENGTH,
+            maxLineGap=HOUGH_MAX_LINE_GAP,
+        )
+        return lines, edges
+
+    def find_grid_intersections(self, lines):
+        """Encuentra intersecciones de líneas de la cuadrícula."""
+        if lines is None:
+            return []
+
+        horizontal = []
+        vertical = []
+
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+
+            if angle < 30:
+                horizontal.append((y1 + y2) // 2)
+            elif angle > 60:
+                vertical.append((x1 + x2) // 2)
+
+        horizontal = sorted({int(y / INTERSECTION_ROUNDING) * INTERSECTION_ROUNDING for y in horizontal})
+        vertical = sorted({int(x / INTERSECTION_ROUNDING) * INTERSECTION_ROUNDING for x in vertical})
+
+        intersections = []
+        for y in horizontal:
+            for x in vertical:
+                intersections.append((x, y))
+
+        return intersections
+
+    def detect_mosaic_colors(self, frame, intersections):
+        """Detecta el color de cada celda de la cuadrícula."""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        grid_colors = []
+
+        if len(intersections) < 4:
+            return []
+
+        intersections = sorted(intersections, key=lambda p: (p[1], p[0]))
+        num_cols = 4
+
+        for i in range(len(intersections) - num_cols - 1):
+            x1, y1 = intersections[i]
+            x2, y2 = intersections[i + num_cols + 1]
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            color = self.get_dominant_color(hsv, cx, cy)
+            grid_colors.append({"position": (i % num_cols, i // num_cols), "color": color})
+
+        return grid_colors
+
+    def get_dominant_color(self, hsv_frame, x, y, radius=COLOR_SAMPLE_RADIUS):
+        """Obtiene el color dominante en una región."""
+        x1 = max(0, x - radius)
+        x2 = min(hsv_frame.shape[1], x + radius)
+        y1 = max(0, y - radius)
+        y2 = min(hsv_frame.shape[0], y + radius)
+
+        region = hsv_frame[y1:y2, x1:x2]
+
+        for color_name, (lower, upper) in self.color_ranges.items():
+            mask = cv2.inRange(region, lower, upper)
+            if np.sum(mask) > (radius * radius * 2) * REGION_THRESHOLD_MULTIPLIER:
+                return color_name
+
+        return "unknown"
+
+    def process_frame(self):
+        """Procesa un frame completo."""
+        ret, frame = self.cap.read()
+        if not ret:
+            return None, None
+
+        lines, _edges = self.detect_grid_lines(frame)
+        intersections = self.find_grid_intersections(lines)
+        colors = self.detect_mosaic_colors(frame, intersections)
+
+        result = {
+            "timestamp": time.time(),
+            "intersections": intersections,
+            "colors": colors,
+            "frame_shape": frame.shape,
+            "grid_detected": len(intersections) >= GRID_MIN_INTERSECTIONS,
+        }
+        return frame, result
+
+    def process_image(self, image_path):
+        """Procesa una imagen estática desde disco."""
+        path = Path(image_path).expanduser()
+        if not path.is_file():
+            return None, None, f"No existe la imagen: {path}"
+
+        frame = cv2.imread(str(path))
+        if frame is None:
+            return None, None, f"No se pudo leer la imagen: {path}"
+
+        lines, _edges = self.detect_grid_lines(frame)
+        intersections = self.find_grid_intersections(lines)
+        colors = self.detect_mosaic_colors(frame, intersections)
+
+        result = {
+            "timestamp": time.time(),
+            "source_image": str(path),
+            "intersections": intersections,
+            "colors": colors,
+            "frame_shape": frame.shape,
+            "grid_detected": len(intersections) >= GRID_MIN_INTERSECTIONS,
+        }
+        return frame, result, None
+
+    def save_grid_capture(self, frame, result):
+        """Guarda la imagen y los datos detectados."""
+        now = time.time()
+        if now - self.last_save_time < SAVE_LIMIT_SECONDS:
+            return None
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        image_path = self.output_dir / f"grid_{timestamp}.jpg"
+        data_path = self.output_dir / f"grid_{timestamp}.json"
+
+        cv2.imwrite(str(image_path), frame)
+
+        serializable_result = dict(result)
+        serializable_result["intersections"] = [list(point) for point in result["intersections"]]
+        serializable_result["colors"] = [
+            {**cell, "position": list(cell["position"])} for cell in result["colors"]
+        ]
+        serializable_result["saved_image"] = str(image_path)
+
+        with open(data_path, "w", encoding="utf-8") as file:
+            json.dump(serializable_result, file, ensure_ascii=False, indent=2)
+
+        self.last_save_time = now
+        return {"image": str(image_path), "data": str(data_path)}
+
+    def draw_detection(self, frame, result):
+        """Dibuja la cuadrícula detectada sobre la imagen."""
+        output = frame.copy()
+
+        for x, y in result["intersections"]:
+            cv2.circle(output, (x, y), 5, (0, 255, 0), -1)
+
+        cv2.putText(
+            output,
+            f"Intersections: {len(result['intersections'])}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return output
+
+    def show_detected_grid(self, frame, result):
+        """Muestra la imagen detectada en una ventana."""
+        display_frame = self.draw_detection(frame, result)
+        cv2.imshow(WINDOW_NAME, display_frame)
+        cv2.waitKey(WINDOW_DISPLAY_MS)
+
+    def parse_grid_command(self, command_text):
+        """Extrae la ruta opcional de `get grid`."""
+        normalized = command_text.strip()
+        if not normalized.lower().startswith(GRID_COMMAND):
+            return None
+
+        remainder = normalized[len(GRID_COMMAND):].strip()
+        return remainder or None
+
+    def capture_until_grid(self, timeout_seconds=5.0):
+        """Intenta detectar la cuadrícula durante unos segundos."""
+        start_time = time.time()
+        latest_frame = None
+        latest_result = None
+
+        while time.time() - start_time < timeout_seconds:
+            frame, result = self.process_frame()
+            if frame is not None:
+                latest_frame = frame
+                latest_result = result
+
+            if result and result["grid_detected"]:
+                return frame, result
+
+            time.sleep(CAPTURE_DELAY_SECONDS)
+
+        return latest_frame, latest_result
+
+    def release(self):
+        self.cap.release()
+
+
+def run_terminal_mode():
+    detector = GridDetector()
+
+    print(PROMPT_TEXT)
+    print(f'Escribe "{GRID_COMMAND}" para capturar desde cámara.')
+    print(f'Escribe "{GRID_COMMAND} <ruta_imagen>" para procesar una imagen.')
+    print(f'Escribe uno de {sorted(EXIT_COMMANDS)} para salir.')
+
+    try:
+        while True:
+            command = input("> ").strip()
+
+            if command.lower() in EXIT_COMMANDS:
+                break
+
+            image_path = detector.parse_grid_command(command)
+            if image_path is None and command.strip().lower() != GRID_COMMAND:
+                print(f'Comando desconocido. Usa "{GRID_COMMAND}" o "quit".')
+                continue
+
+            if image_path:
+                frame, result, error = detector.process_image(image_path)
+                if error:
+                    print(error)
+                    continue
+            else:
+                frame, result = detector.capture_until_grid()
+                error = None
+                if frame is None or result is None:
+                    print("No se pudo leer la cámara.")
+                    continue
+
+            if result["grid_detected"]:
+                saved = detector.save_grid_capture(frame, result)
+                detector.show_detected_grid(frame, result)
+                if saved:
+                    print(f'Cuadrícula guardada en {saved["image"]}')
+                    print(f'Datos guardados en {saved["data"]}')
+                print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            else:
+                print("No se detectó la cuadrícula en el tiempo límite.")
+                print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    finally:
+        detector.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    run_terminal_mode()
