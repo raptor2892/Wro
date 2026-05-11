@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from grid_detector_constants import (
+from constants import (
     CAPTURE_DELAY_SECONDS,
     CAMERA_ID,
     COLOR_RANGES,
@@ -25,6 +25,9 @@ from grid_detector_constants import (
     PROMPT_TEXT,
     REGION_THRESHOLD_MULTIPLIER,
     SAVE_LIMIT_SECONDS,
+    WINDOW_NAME,
+    WINDOW_DISPLAY_MS,
+    WINDOW_WAIT_MS,
 )
 
 
@@ -165,6 +168,32 @@ class GridDetector:
         self.last_save_time = now
         return {"image": str(image_path), "data": str(data_path)}
 
+    def draw_detection(self, frame, result):
+        """Dibuja la cuadrícula detectada sobre la imagen."""
+        output = frame.copy()
+
+        for x, y in result["intersections"]:
+            cv2.circle(output, (x, y), 5, (0, 255, 0), -1)
+
+        cv2.putText(
+            output,
+            f"Intersections: {len(result['intersections'])}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return output
+
+    def show_detected_grid(self, frame, result):
+        """Muestra la imagen detectada en una ventana."""
+        display_frame = self.draw_detection(frame, result)
+        cv2.imshow(WINDOW_NAME, display_frame)
+        cv2.waitKey(WINDOW_DISPLAY_MS)
+
     def capture_until_grid(self, timeout_seconds=5.0):
         """Intenta detectar la cuadrícula durante unos segundos."""
         start_time = time.time()
@@ -213,6 +242,7 @@ def run_terminal_mode():
 
             if result["grid_detected"]:
                 saved = detector.save_grid_capture(frame, result)
+                detector.show_detected_grid(frame, result)
                 if saved:
                     print(f'Cuadrícula guardada en {saved["image"]}')
                     print(f'Datos guardados en {saved["data"]}')
@@ -222,6 +252,7 @@ def run_terminal_mode():
                 print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
         detector.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

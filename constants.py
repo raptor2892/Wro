@@ -7,7 +7,10 @@ OUTPUT_DIR = "captures"
 
 GRID_COMMAND = "get grid"
 EXIT_COMMANDS = {"exit", "quit", "q"}
-PROMPT_TEXT = "Detector de cuadrícula listo para usarse desde terminal."
+PROMPT_TEXT = "Detector de cuadrícula TERMINAL."
+WINDOW_NAME = "Grid detectada"
+WINDOW_WAIT_MS = 0
+WINDOW_DISPLAY_MS = 2500
 
 HOUGH_THRESHOLD = 50
 HOUGH_MIN_LINE_LENGTH = 50
