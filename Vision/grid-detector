@@ -201,18 +201,18 @@ class GridDetector:
         return palette
 
     def build_artificial_grid(self, regions):
-        """Agrupa regiones por filas/columnas y genera la rejilla artificial."""
+        """Agrupa regiones por filas/columnas y genera la rejilla artificial (4x3)."""
         if not regions:
             return []
 
         x_centers = [region["center"][0] for region in regions]
         y_centers = [region["center"][1] for region in regions]
-        axis_count = self._estimate_axis_count(len(regions))
 
-        columns = self._cluster_positions(x_centers, axis_count)
-        rows = self._cluster_positions(y_centers, axis_count)
+        # Forzar matriz 4x3 (4 columnas, 3 filas)
+        columns = self._cluster_positions(x_centers, 4)
+        rows = self._cluster_positions(y_centers, 3)
 
-        if len(rows) < MIN_GRID_ROWS or len(columns) < MIN_GRID_COLS:
+        if len(rows) < 3 or len(columns) < 4:
             return []
 
         cells = []
@@ -238,9 +238,14 @@ class GridDetector:
             )
 
         grid_matrix = [[None for _ in columns] for _ in rows]
-        for cell in cells:
+        for cell_index, cell in enumerate(cells):
             if 0 <= cell["row"] < len(rows) and 0 <= cell["col"] < len(columns):
-                grid_matrix[cell["row"]][cell["col"]] = cell
+                # Solo guardar el índice y color para matriz simplificada
+                grid_matrix[cell["row"]][cell["col"]] = {
+                    "id": cell_index,
+                    "color": cell["color"],
+                    "cluster_id": cell["cluster_id"]
+                }
 
         self._grid_layout = {
             "rows": rows,
@@ -252,8 +257,10 @@ class GridDetector:
         return cells
 
     def _estimate_axis_count(self, region_count):
-        """Estima cuántas filas/columnas tiene la cuadrícula."""
-        return min(4, max(2, int(round(np.sqrt(region_count)))))
+        """Estima cuántas filas/columnas tiene la cuadrícula (4x3 o 3x4)."""
+        # Detectar si es más ancho o alto basado en la región dominante
+        # Por defecto: 4 columnas x 3 filas
+        return 4  # columnas: 4, filas: 3 (se asigna en build_artificial_grid)
 
     def _cluster_positions(self, positions, cluster_count):
         """Agrupa posiciones con k-means 1D para obtener bandas de la rejilla."""
