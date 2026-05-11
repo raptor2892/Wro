@@ -1,0 +1,172 @@
+import cv2
+import numpy as np
+from collections import defaultdict
+import json
+import time
+
+class GridDetector:
+    def __init__(self, camera_id=0):
+        self.cap = cv2.VideoCapture(camera_id)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        # Define  colors ( HSV) 
+        self.color_ranges = {
+            'yellow': ([20, 100, 100], [30, 255, 255]),
+            'blue': ([100, 100, 100], [130, 255, 255]),
+            'green': ([50, 100, 100], [70, 255, 255]),
+            'white': ([0, 0, 200], [180, 50, 255])
+        }
+        
+    def detect_grid_lines(self, frame):
+        """Detecta las líneas de la cuadrícula"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Aplicar Canny para detectar bordes
+        edges = cv2.Canny(gray, 50, 150)
+        
+        # Detectar líneas con HoughLines
+        lines = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi/180,
+            threshold=50,
+            minLineLength=50,
+            maxLineGap=10
+        )
+        
+        return lines, edges
+    
+    def find_grid_intersections(self, lines):
+        """Encuentra intersecciones de líneas (vértices de la cuadrícula)"""
+        if lines is None:
+            return []
+        
+        # Separar líneas horizontales y verticales
+        horizontal = []
+        vertical = []
+        
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+            
+            if angle < 30:  # Líneas más horizontales
+                horizontal.append((y1 + y2) // 2)
+            elif angle > 60:  # Líneas más verticales
+                vertical.append((x1 + x2) // 2)
+        
+        # Agrupar líneas cercanas
+        horizontal = sorted(list(set([int(y / 10) * 10 for y in horizontal])))
+        vertical = sorted(list(set([int(x / 10) * 10 for x in vertical])))
+        
+        # Crear intersecciones
+        intersections = []
+        for y in horizontal:
+            for x in vertical:
+                intersections.append((x, y))
+        
+        return intersections
+    
+    def detect_mosaic_colors(self, frame, intersections):
+        """Detecta el color de cada celda de la cuadrícula"""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        grid_colors = []
+        
+        # Organizar intersecciones en matriz
+        if len(intersections) < 4:
+            return []
+        
+        intersections = sorted(intersections, key=lambda p: (p[1], p[0]))
+        
+        # Asumir cuadrícula 4x4 (16 celdas)
+        num_cols = 4
+        
+        for i in range(len(intersections) - num_cols - 1):
+            x1, y1 = intersections[i]
+            x2, y2 = intersections[i + num_cols + 1]
+            
+            # Obtener centro de celda
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            
+            # Detectar color en el centro
+            color = self.get_dominant_color(hsv, cx, cy)
+            grid_colors.append({'position': (i % num_cols, i // num_cols), 'color': color})
+        
+        return grid_colors
+    
+    def get_dominant_color(self, hsv_frame, x, y, radius=15):
+        """Obtiene el color dominante en una región"""
+        x1 = max(0, x - radius)
+        x2 = min(hsv_frame.shape[1], x + radius)
+        y1 = max(0, y - radius)
+        y2 = min(hsv_frame.shape[0], y + radius)
+        
+        region = hsv_frame[y1:y2, x1:x2]
+        
+        for color_name, (lower, upper) in self.color_ranges.items():
+            lower = np.array(lower)
+            upper = np.array(upper)
+            mask = cv2.inRange(region, lower, upper)
+            if np.sum(mask) > (radius * radius * 2) * 100:
+                return color_name
+        
+        return 'unknown'
+    
+    def process_frame(self):
+        """Procesa un frame completo"""
+        ret, frame = self.cap.read()
+        if not ret:
+            return None
+        
+        lines, edges = self.detect_grid_lines(frame)
+        intersections = self.find_grid_intersections(lines)
+        colors = self.detect_mosaic_colors(frame, intersections)
+        
+        return {
+            'timestamp': time.time(),
+            'intersections': intersections,
+            'colors': colors,
+            'frame_shape': frame.shape
+        }
+    
+    def visualize(self, frame, result):
+        """Visualiza los resultados (útil para debugging)"""
+        if result is None or result['intersections'] is None:
+            return frame
+        
+        output = frame.copy()
+        
+        # Dibujar intersecciones
+        for x, y in result['intersections']:
+            cv2.circle(output, (x, y), 5, (0, 255, 0), -1)
+        
+        # Dibujar colores detectados
+        for cell in result['colors']:
+            # Implementar visualización de colores
+            pass
+        
+        return output
+    
+    def release(self):
+        self.cap.release()
+
+
+# Main code 
+if __name__ == "__main__":
+    detector = GridDetector()
+    
+    try:
+        while True:
+            result = detector.process_frame()
+            
+            if result:
+                # Enviar datos a C++ via socket o archivo
+                print(json.dumps(result, default=str))
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    finally:
+        detector.release()
+        cv2.destroyAllWindows()
