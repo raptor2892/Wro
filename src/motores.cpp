@@ -46,6 +46,15 @@ void girarDerecha(){
     analogWrite(PWMB, 255);
 }
 
+void detenerMotores() {
+    digitalWrite(AIN1, LOW);
+    digitalWrite(AIN2, LOW);
+    analogWrite(PWMA, 0);
+    digitalWrite(BIN1, LOW);
+    digitalWrite(BIN2, LOW);
+    analogWrite(PWMB, 0);
+}
+
 void avanzar_hasta_linea(){
     while (!verificarLineaAncha()) {
         float posicion = calcularPosicionLinea();

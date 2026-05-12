@@ -19,6 +19,7 @@ void avanzar();
 void retroceder();
 void girarIzquierda();
 void girarDerecha();
+void detenerMotores();
 void avanzar_hasta_linea();
 
 void girarGrados(float grados);
