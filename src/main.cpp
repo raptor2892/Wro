@@ -1,4 +1,5 @@
 #include <Arduino.h>
+<<<<<<< HEAD
 #include "line_follower.h"
 #include "motores.h"
 #include "Sensores.h"
@@ -21,3 +22,17 @@ void loop() {
     
     // Mantenemos el loop libre de delays para no perder ningún frame enviado por Python
 }
+=======
+
+#include "line_follower.h"
+
+void setup() {
+    beginLineFollower();
+}
+
+void loop() {
+    updateLineFollower();
+    delay(5);
+}
+
+>>>>>>> a9d26d1bb75b58abf3071deb52fe26dd5f5cc306

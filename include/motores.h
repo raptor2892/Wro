@@ -28,6 +28,10 @@ void derecha(int pwm);
 void girarIzquierda();
 void girarDerecha();
 void detenerMotores();
+<<<<<<< HEAD
+=======
+void avanzar_hasta_linea();
+>>>>>>> a9d26d1bb75b58abf3071deb52fe26dd5f5cc306
 
 void girarGrados(float grados);
 void inicializarServo();

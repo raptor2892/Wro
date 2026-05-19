@@ -55,9 +55,29 @@ void motorDer(int velocidad) {
   velActualDer = velocidad;
 }
 
+<<<<<<< HEAD
 void parar() {
   motorIzq(0);
   motorDer(0);
+=======
+void detenerMotores() {
+    digitalWrite(AIN1, LOW);
+    digitalWrite(AIN2, LOW);
+    analogWrite(PWMA, 0);
+    digitalWrite(BIN1, LOW);
+    digitalWrite(BIN2, LOW);
+    analogWrite(PWMB, 0);
+}
+
+void avanzar_hasta_linea(){
+    while (!verificarLineaAncha()) {
+        float posicion = calcularPosicionLinea();
+        controlarPID(posicion);
+        delay(10); // Pequeño delay para estabilidad
+    }
+    // Detener motores al llegar
+    ajustarMotores(0, 0);
+>>>>>>> a9d26d1bb75b58abf3071deb52fe26dd5f5cc306
 }
 
 // ===================== GIRO CON ÁNGULO OPTIMIZADO =====================
