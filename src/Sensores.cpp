@@ -1,101 +1,113 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <math.h>
 #include "Sensores.h"
-#include <Wire.h>
-
-#define lectura1 2
-#define lectura2 3
-#define lectura3 4
-#define lectura4 5
-#define lectura5 6
-#define lectura6 7
-#define lectura7 8
-#define lectura8 9
 
 bool linea_ancha = false;
-Adafruit_BNO08x bno08x(-1); // Reset pin only for current library version
+Adafruit_BNO08x bno08x(-1);
+sh2_SensorValue_t sensorValue;
 float yaw_inicial = 0.0;
 
-volatile long encoder1_count = 0;
-volatile long encoder2_count = 0;
+uint8_t scanI2C() {
+    Serial.println("Escaneando bus I2C...");
+    uint8_t found = 0;
 
-void IRAM_ATTR encoder1_ISR() {
-    if (digitalRead(ENC1_B) == HIGH) {
-        encoder1_count++;
-    } else {
-        encoder1_count--;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        uint8_t error = Wire.endTransmission();
+
+        if (error == 0) {
+            Serial.print("  Dispositivo encontrado en 0x");
+            if (addr < 16) Serial.print("0");
+            Serial.println(addr, HEX);
+            found = addr;
+            break;
+        }
+    }
+
+    if (!found) {
+        Serial.println("  Ningún dispositivo encontrado.");
+    }
+
+    return found;
+}
+
+void setReports() {
+    if (!bno08x.enableReport(SH2_ROTATION_VECTOR, 50000)) {
+        Serial.println("WARNING: no se pudo habilitar SH2_ROTATION_VECTOR");
+    }
+    if (!bno08x.enableReport(SH2_ACCELEROMETER, 50000)) {
+        Serial.println("WARNING: no se pudo habilitar SH2_ACCELEROMETER");
+    }
+    if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, 50000)) {
+        Serial.println("WARNING: no se pudo habilitar SH2_GYROSCOPE_CALIBRATED");
     }
 }
 
-void IRAM_ATTR encoder2_ISR() {
-    if (digitalRead(ENC2_B) == HIGH) {
-        encoder2_count++;
-    } else {
-        encoder2_count--;
-    }
+void quaternionToEuler(float qr, float qi, float qj, float qk,
+                       float &roll, float &pitch, float &yaw) {
+    float sqr = qr * qr;
+    float sqi = qi * qi;
+    float sqj = qj * qj;
+    float sqk = qk * qk;
+
+    roll  = atan2(2.0 * (qr * qi + qj * qk), 1.0 - 2.0 * (sqi + sqj)) * 180.0 / PI;
+    pitch = asin(2.0 * (qr * qj - qk * qi)) * 180.0 / PI;
+    yaw   = atan2(2.0 * (qr * qk + qi * qj), 1.0 - 2.0 * (sqj + sqk)) * 180.0 / PI;
 }
 
-bool verificarLineaAncha() {
-    if (digitalRead(lectura1) == HIGH && digitalRead(lectura2) == HIGH &&
-        digitalRead(lectura3) == HIGH && digitalRead(lectura4) == HIGH &&
-        digitalRead(lectura5) == HIGH && digitalRead(lectura6) == HIGH &&
-        digitalRead(lectura7) == HIGH && digitalRead(lectura8) == HIGH) {
-        linea_ancha = true;
-        return true;
-    } else {
-        linea_ancha = false;
+bool iniciarBNO() {
+    Serial.println("Iniciando BNO085...");
+    Wire.end();
+    delay(100);
+    Wire.begin(21, 22);
+    delay(200);
+    Serial.println("Bus I2C iniciado en SDA=21, SCL=22");
+
+    uint8_t addr = scanI2C();
+    if (!addr) {
+        Serial.println("ERROR: No se encontró ningún dispositivo I2C.");
         return false;
     }
-}
 
-void iniciarBNO() {
-    if (!bno08x.begin_I2C()) {
-        Serial.println("Error al inicializar BNO08x");
-        while (1);
-    }
-    Serial.println("BNO08x inicializado");
+    Serial.print("Iniciando BNO085 en 0x");
+    Serial.println(addr, HEX);
 
-    // Configurar reportes
-    if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR)) {
-        Serial.println("Error al habilitar reporte de rotación");
+    if (!bno08x.begin_I2C(addr)) {
+        Serial.println("ERROR: No se pudo iniciar el BNO085 en esa dirección.");
+        return false;
     }
 
-    // Capturar yaw inicial
+    Serial.println("BNO085 OK.");
+    setReports();
+    Serial.println("Reportes habilitados.");
+
     delay(100);
     yaw_inicial = leerYaw();
+    return true;
 }
 
 float leerYaw() {
-    sh2_SensorValue_t sensorValue;
-    if (bno08x.getSensorEvent(&sensorValue)) {
-        if (sensorValue.sensorId == SH2_GAME_ROTATION_VECTOR) {
-            // Convertir quaternion a yaw (en grados)
-            float qr = sensorValue.un.gameRotationVector.real;
-            float qi = sensorValue.un.gameRotationVector.i;
-            float qj = sensorValue.un.gameRotationVector.j;
-            float qk = sensorValue.un.gameRotationVector.k;
+    unsigned long deadline = millis() + 50;
+    while (millis() < deadline) {
+        if (!bno08x.getSensorEvent(&sensorValue)) {
+            continue;
+        }
 
-            float yaw = atan2(2.0 * (qj * qk + qi * qr), 1.0 - 2.0 * (qi * qi + qj * qj));
-            return yaw * 180.0 / PI; // Convertir a grados
+        if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+            float roll, pitch, yaw;
+            quaternionToEuler(
+                sensorValue.un.rotationVector.real,
+                sensorValue.un.rotationVector.i,
+                sensorValue.un.rotationVector.j,
+                sensorValue.un.rotationVector.k,
+                roll, pitch, yaw);
+
+            if (yaw < 0) yaw += 360.0;
+            yaw_inicial = yaw;
+            return yaw;
         }
     }
-    return 0.0; // Error
-}
 
-void iniciarEncoders() {
-    pinMode(ENC1_A, INPUT_PULLUP);
-    pinMode(ENC1_B, INPUT_PULLUP);
-    pinMode(ENC2_A, INPUT_PULLUP);
-    pinMode(ENC2_B, INPUT_PULLUP);
-
-    attachInterrupt(digitalPinToInterrupt(ENC1_A), encoder1_ISR, RISING);
-    attachInterrupt(digitalPinToInterrupt(ENC2_A), encoder2_ISR, RISING);
-}
-
-long leerEncoder1() {
-    return encoder1_count;
-}
-
-long leerEncoder2() {
-    return encoder2_count;
+    return yaw_inicial;
 }

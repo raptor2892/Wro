@@ -1,43 +1,23 @@
 #include <Arduino.h>
+#include "line_follower.h"
 #include "motores.h"
 #include "Sensores.h"
-#include <Wire.h>
 
 void setup() {
-    Serial.begin(115200);
-    Wire.begin();
-
-    // Configurar pines de motores como salida
-    pinMode(AIN1, OUTPUT);
-    pinMode(AIN2, OUTPUT);
-    pinMode(PWMA, OUTPUT);
-    pinMode(BIN1, OUTPUT);
-    pinMode(BIN2, OUTPUT);
-    pinMode(PWMB, OUTPUT);
-
-    // Configurar pines de sensores como entrada
-    pinMode(lectura1, INPUT);
-    pinMode(lectura2, INPUT);
-    pinMode(lectura3, INPUT);
-    pinMode(lectura4, INPUT);
-    pinMode(lectura5, INPUT);
-    pinMode(lectura6, INPUT);
-    pinMode(lectura7, INPUT);
-    pinMode(lectura8, INPUT);
-
-    iniciarBNO();
-    inicializarServo();
-    iniciarEncoders();
-    Serial.println("Sistema inicializado");
+    // 1. Inicializa las comunicaciones, pines de motores, servos y el sensor IMU BNO08x
+    beginLineFollower();
+    
+    // Pequeño delay de estabilización después de arrancar los sistemas
+    delay(500);
+    
+    // 2. Envía la señal por el puerto serial hacia el script de Python para arrancar la cámara
+    Serial.println(">>> Iniciando seguidor de linea...");
+    avanzarConLinea(); 
 }
 
 void loop() {
-    // Imprimir valores de encoders
-    Serial.print("Encoder1: ");
-    Serial.print(leerEncoder1());
-    Serial.print(" Encoder2: ");
-    Serial.println(leerEncoder2());
+    // Escucha el puerto serial de forma continua, procesa comandos PID o caracteres de paro 'S'
+    updateLineFollower();
     
-    delay(100); // Delay para no saturar el serial
+    // Mantenemos el loop libre de delays para no perder ningún frame enviado por Python
 }
-

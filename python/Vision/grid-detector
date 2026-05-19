@@ -1,0 +1,468 @@
+import json
+import time
+import serial  # pip install pyserial
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from python.Vision.constants import (
+    CAPTURE_DELAY_SECONDS, CAMERA_ID, COLOR_RANGES, COLOR_SAMPLE_RADIUS,
+    ADAPTIVE_BLOCK_SIZE, ADAPTIVE_C, EXIT_COMMANDS, FRAME_HEIGHT, FRAME_WIDTH,
+    FPS, GRID_COMMAND, GRID_MIN_INTERSECTIONS, HOUGH_MAX_LINE_GAP,
+    HOUGH_MIN_LINE_LENGTH, HOUGH_THRESHOLD, LINE_CLUSTER_TOLERANCE,
+    INTERSECTION_ROUNDING, COLOR_CLUSTER_TOLERANCE, COLOR_REGION_MIN_AREA,
+    COLOR_COMPONENT_MIN_AREA, COLOR_COMPONENT_MAX_AREA, PALETTE_CLUSTER_COUNT,
+    PALETTE_BACKGROUND_MAX_RATIO, PALETTE_BACKGROUND_MIN_COUNT,
+    PALETTE_MIN_SATURATION, PALETTE_MIN_VALUE, PALETTE_SAMPLE_SIZE,
+    MORPH_KERNEL_SIZE, OUTPUT_DIR, PROMPT_TEXT, GRID_AXIS_TOLERANCE,
+    MIN_GRID_ROWS, MIN_GRID_COLS, MIN_GRID_COMPONENTS,
+    REGION_THRESHOLD_MULTIPLIER, SAVE_LIMIT_SECONDS, WINDOW_NAME,
+    WINDOW_DISPLAY_MS, WINDOW_WAIT_MS,
+)
+
+# ─────────────────────────────────────────────
+# COLORES OBJETIVO EN ESPACIO LAB
+# L: luminosidad (0=negro, 255=blanco)
+# A: verde(-) ↔ rojo(+)   centro=128
+# B: azul(-)  ↔ amarillo(+) centro=128
+# ─────────────────────────────────────────────
+TARGET_COLORS_LAB = {
+    "blanco":   (220, 128, 128),   # L alto, A y B neutros
+    "amarillo": (180, 120, 170),   # L alto, B alto
+    "verde":    (120, 100, 140),   # L medio, A bajo
+    "azul":     ( 80, 120,  90),   # L bajo,  B bajo
+}
+
+def classify_lab_to_color(lab_tuple):
+    """Compara un valor LAB con los colores objetivo y devuelve el más cercano."""
+    l, a, b = lab_tuple
+    best_color = "desconocido"
+    best_dist = float("inf")
+    for color_name, (tl, ta, tb) in TARGET_COLORS_LAB.items():
+        dist = ((l - tl) ** 2 + (a - ta) ** 2 + (b - tb) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best_color = color_name
+
+    return best_color
+
+def build_color_map(palette):
+    """Asigna un color real a cada cluster de la paleta."""
+    color_map = {}
+    for cluster in palette:
+        cluster_name = cluster["name"]
+        lab = cluster["center_lab"]
+        color_map[cluster_name] = classify_lab_to_color(lab)
+    return color_map
+
+def matrix_to_serial_list(grid_matrix, color_map):
+    """
+    Convierte la matriz a lista de strings: 'fila,col=color'
+    Retorna también el string completo listo para enviar por serial.
+    """
+    entries = []
+    for row_idx, row in enumerate(grid_matrix):
+        for col_idx, cell in enumerate(row):
+            if cell is None:
+                color = "desconocido"
+            else:
+                cluster_name = cell["color"]
+                color = color_map.get(cluster_name, "desconocido")
+            entries.append(f"{row_idx},{col_idx}={color}")
+
+    serial_string = ";".join(entries) + "\n"
+    return entries, serial_string
+
+def send_grid_serial(serial_port, grid_matrix, color_map):
+    """Envía la grilla clasificada por puerto serial."""
+    entries, serial_string = matrix_to_serial_list(grid_matrix, color_map)
+
+    print("\n── Grilla clasificada ──")
+    for entry in entries:
+        print(" ", entry)
+    print(f"\nEnviando: {serial_string.strip()}")
+
+    if serial_port:
+        serial_port.write(serial_string.encode("utf-8"))
+
+    return serial_string
+
+
+# ─────────────────────────────────────────────
+# CONFIGURACIÓN SERIAL  (ajusta el puerto)
+# ─────────────────────────────────────────────
+SERIAL_PORT = "COM3"      # Windows: "COM3" / Linux: "/dev/ttyUSB0" / Mac: "/dev/cu.usbserial-..."
+SERIAL_BAUD = 115200
+SERIAL_ENABLED = False    # Cambia a True cuando tengas el ESP32 conectado
+
+
+class GridDetector:
+    def __init__(self, camera_id=CAMERA_ID):
+        self.cap = cv2.VideoCapture(camera_id)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        self.cap.set(cv2.CAP_PROP_FPS, FPS)
+        self.output_dir = Path(OUTPUT_DIR)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.last_save_time = 0.0
+        self._grid_layout = {}
+
+        self.color_ranges = {
+            name: (np.array(lower), np.array(upper))
+            for name, (lower, upper) in COLOR_RANGES.items()
+        }
+
+        # Puerto serial opcional
+        self.serial_port = None
+        if SERIAL_ENABLED:
+            try:
+                self.serial_port = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
+                print(f"Serial abierto en {SERIAL_PORT} @ {SERIAL_BAUD}")
+            except Exception as e:
+                print(f"No se pudo abrir serial: {e}")
+
+    def detect_grid_lines(self, frame):
+        regions, palette = self.detect_color_regions(frame)
+        return regions, palette
+
+    def preprocess_grid_image(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(blurred)
+        binary = cv2.adaptiveThreshold(
+            clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, ADAPTIVE_BLOCK_SIZE, ADAPTIVE_C,
+        )
+        kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_KERNEL_SIZE, 1))
+        kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, MORPH_KERNEL_SIZE))
+        horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_h)
+        vertical   = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_v)
+        combined = cv2.bitwise_or(horizontal, vertical)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE,
+                                    cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+        return combined
+
+    def detect_color_regions(self, frame):
+        palette = self._build_palette(frame)
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        height, width = lab.shape[:2]
+        pixels = lab.reshape(-1, 3).astype(np.float32)
+
+        if not palette:
+            return [], []
+
+        centers = np.float32([cluster["center_lab"] for cluster in palette])
+        distances = np.sum((pixels[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+        labels = np.argmin(distances, axis=1).reshape(height, width).astype(np.uint8)
+
+        regions = []
+        for cluster_index, cluster in enumerate(palette):
+            mask = (labels == cluster_index).astype(np.uint8) * 255
+            coverage = cv2.countNonZero(mask) / float(mask.size)
+            if coverage > PALETTE_BACKGROUND_MAX_RATIO:
+                continue
+            if cv2.countNonZero(mask) < PALETTE_BACKGROUND_MIN_COUNT:
+                continue
+
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  np.ones((5, 5), np.uint8))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < COLOR_COMPONENT_MIN_AREA or area > COLOR_COMPONENT_MAX_AREA:
+                    continue
+                x, y, w, h = cv2.boundingRect(contour)
+                if w < 8 or h < 8:
+                    continue
+                aspect_ratio = float(w) / float(h) if h > 0 else 0
+                if aspect_ratio > 3.0 or aspect_ratio < 0.33:
+                    continue
+                regions.append({
+                    "cluster_id": cluster_index,
+                    "color": cluster["name"],
+                    "center": (x + w // 2, y + h // 2),
+                    "area": float(area),
+                    "bbox": (x, y, x + w, y + h),
+                    "center_lab": cluster["center_lab"],
+                })
+
+        regions.sort(key=lambda r: (r["center"][1], r["center"][0]))
+        return regions, palette
+
+    def _build_palette(self, frame):
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        pixels     = lab.reshape(-1, 3)
+        hsv_pixels = hsv.reshape(-1, 3)
+
+        indices = None
+        if len(pixels) > PALETTE_SAMPLE_SIZE:
+            indices    = np.linspace(0, len(pixels) - 1, PALETTE_SAMPLE_SIZE, dtype=int)
+            pixels     = pixels[indices]
+            hsv_pixels = hsv_pixels[indices]
+
+        mask = (hsv_pixels[:, 1] >= PALETTE_MIN_SATURATION) & \
+               (hsv_pixels[:, 2] >= PALETTE_MIN_VALUE)
+        colorful = pixels[mask]
+        if len(colorful) < 100:
+            colorful = pixels
+
+        data = np.float32(colorful)
+        k = min(PALETTE_CLUSTER_COUNT, len(data))
+        if k <= 0:
+            return []
+
+        _, _, centers = cv2.kmeans(
+            data, k, None,
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0),
+            5, cv2.KMEANS_PP_CENTERS,
+        )
+        centers = np.uint8(centers)
+        return [
+            {"name": f"cluster_{i}", "center_lab": tuple(int(v) for v in c)}
+            for i, c in enumerate(centers)
+        ]
+
+    def build_artificial_grid(self, regions):
+        if not regions:
+            return []
+
+        x_centers = [r["center"][0] for r in regions]
+        y_centers = [r["center"][1] for r in regions]
+
+        columns = self._cluster_positions(x_centers, 4)
+        rows    = self._cluster_positions(y_centers, 3)
+
+        if len(rows) < 3 or len(columns) < 4:
+            return []
+
+        cells = []
+        for region in regions:
+            cx, cy = region["center"]
+            row_idx = self._nearest_index(rows,    cy)
+            col_idx = self._nearest_index(columns, cx)
+            x1, y1, x2, y2 = region["bbox"]
+            cells.append({
+                "row": row_idx, "col": col_idx,
+                "position": [col_idx, row_idx],
+                "x1": int(x1), "y1": int(y1),
+                "x2": int(x2), "y2": int(y2),
+                "center": [int(cx), int(cy)],
+                "area": float(region["area"]),
+                "color": region["color"],
+                "cluster_id": region["cluster_id"],
+            })
+
+        grid_matrix = [[None] * len(columns) for _ in rows]
+        for idx, cell in enumerate(cells):
+            r, c = cell["row"], cell["col"]
+            if 0 <= r < len(rows) and 0 <= c < len(columns):
+                grid_matrix[r][c] = {
+                    "id": idx,
+                    "color": cell["color"],
+                    "cluster_id": cell["cluster_id"],
+                }
+
+        self._grid_layout = {
+            "rows": rows, "columns": columns,
+            "cells": cells, "matrix": grid_matrix,
+        }
+        return cells
+
+    def _cluster_positions(self, positions, k):
+        if not positions:
+            return []
+        if len(positions) <= k:
+            return sorted(int(v) for v in positions)
+        data = np.float32(positions).reshape(-1, 1)
+        _, _, centers = cv2.kmeans(
+            data, k, None,
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.1),
+            10, cv2.KMEANS_PP_CENTERS,
+        )
+        return sorted(int(round(c[0])) for c in centers)
+
+    def _nearest_index(self, values, target):
+        return min(range(len(values)), key=lambda i: abs(values[i] - target))
+
+    def detect_mosaic_colors(self, frame, intersections):
+        if not intersections or not hasattr(self, "_grid_layout"):
+            return []
+        cells = self._grid_layout.get("cells", [])
+        cells.sort(key=lambda c: (c["row"], c["col"]))
+        return cells
+
+    def get_dominant_color(self, hsv_frame, x, y, radius=COLOR_SAMPLE_RADIUS):
+        x1 = max(0, x - radius); x2 = min(hsv_frame.shape[1], x + radius)
+        y1 = max(0, y - radius); y2 = min(hsv_frame.shape[0], y + radius)
+        region = hsv_frame[y1:y2, x1:x2]
+        for name, (lower, upper) in self.color_ranges.items():
+            mask = cv2.inRange(region, lower, upper)
+            if np.sum(mask) > (radius * radius * 2) * REGION_THRESHOLD_MULTIPLIER:
+                return name
+        return "unknown"
+
+    def process_frame(self):
+        ret, frame = self.cap.read()
+        if not ret:
+            return None, None
+        regions, palette = self.detect_grid_lines(frame)
+        cells  = self.build_artificial_grid(regions)
+        colors = self.detect_mosaic_colors(frame, cells)
+        result = {
+            "timestamp": time.time(),
+            "palette": palette,
+            "intersections": [c["center"] for c in colors],
+            "colors": colors,
+            "frame_shape": frame.shape,
+            "grid_detected": len(colors) >= MIN_GRID_COMPONENTS,
+            "grid": self._grid_layout if hasattr(self, "_grid_layout") else {},
+        }
+        return frame, result
+
+    def process_image(self, image_path):
+        path = Path(image_path).expanduser()
+        if not path.is_file():
+            return None, None, f"No existe la imagen: {path}"
+        frame = cv2.imread(str(path))
+        if frame is None:
+            return None, None, f"No se pudo leer: {path}"
+
+        regions, palette = self.detect_grid_lines(frame)
+        cells  = self.build_artificial_grid(regions)
+        colors = self.detect_mosaic_colors(frame, cells)
+        result = {
+            "timestamp": time.time(),
+            "source_image": str(path),
+            "palette": palette,
+            "intersections": [c["center"] for c in colors],
+            "colors": colors,
+            "frame_shape": frame.shape,
+            "grid_detected": len(colors) >= MIN_GRID_COMPONENTS,
+            "grid": self._grid_layout if hasattr(self, "_grid_layout") else {},
+        }
+        return frame, result, None
+
+    def save_grid_capture(self, frame, result):
+        now = time.time()
+        if now - self.last_save_time < SAVE_LIMIT_SECONDS:
+            return None
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path  = self.output_dir / f"grid_{ts}.jpg"
+        data_path = self.output_dir / f"grid_{ts}.json"
+        cv2.imwrite(str(img_path), frame)
+        serializable = dict(result)
+        serializable["intersections"] = [list(p) for p in result["intersections"]]
+        serializable["palette"]       = list(result.get("palette", []))
+        serializable["colors"]        = [
+            {**c, "position": list(c["position"]), "center": list(c["center"])}
+            for c in result["colors"]
+        ]
+        with open(data_path, "w", encoding="utf-8") as f:
+            json.dump(serializable, f, ensure_ascii=False, indent=2)
+        self.last_save_time = now
+        return {"image": str(img_path), "data": str(data_path)}
+
+    def draw_detection(self, frame, result, color_map=None):
+        output = frame.copy()
+        for cell in result["colors"]:
+            x1, y1, x2, y2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
+            x, y = cell["center"]
+
+            # Mostrar color real si hay mapa, si no el cluster
+            label = color_map.get(cell["color"], cell["color"]) if color_map else cell["color"]
+
+            cv2.rectangle(output, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.circle(output, (x, y), 5, (0, 255, 255), -1)
+            cv2.putText(output, label, (x1, max(10, y1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+
+        cv2.putText(output, f"Cells: {len(result['colors'])}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
+        return output
+
+    def show_detected_grid(self, frame, result, color_map=None):
+        display = self.draw_detection(frame, result, color_map)
+        cv2.imshow(WINDOW_NAME, display)
+        cv2.waitKey(WINDOW_DISPLAY_MS)
+
+    def parse_grid_command(self, command_text):
+        normalized = command_text.strip()
+        if not normalized.lower().startswith(GRID_COMMAND):
+            return None
+        remainder = normalized[len(GRID_COMMAND):].strip()
+        return remainder or None
+
+    def capture_until_grid(self, timeout_seconds=5.0):
+        start = time.time()
+        latest_frame = latest_result = None
+        while time.time() - start < timeout_seconds:
+            frame, result = self.process_frame()
+            if frame is not None:
+                latest_frame, latest_result = frame, result
+            if result and result["grid_detected"]:
+                return frame, result
+            time.sleep(CAPTURE_DELAY_SECONDS)
+        return latest_frame, latest_result
+
+    def release(self):
+        self.cap.release()
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+
+
+def run_terminal_mode():
+    detector = GridDetector()
+    print(PROMPT_TEXT)
+    print(f'Escribe "{GRID_COMMAND}" para capturar desde cámara.')
+    print(f'Escribe "{GRID_COMMAND} <ruta_imagen>" para procesar una imagen.')
+    print(f'Escribe uno de {sorted(EXIT_COMMANDS)} para salir.')
+
+    try:
+        while True:
+            command = input("> ").strip()
+            if command.lower() in EXIT_COMMANDS:
+                break
+
+            image_path = detector.parse_grid_command(command)
+            if image_path is None and command.strip().lower() != GRID_COMMAND:
+                print(f'Comando desconocido. Usa "{GRID_COMMAND}" o "quit".')
+                continue
+
+            if image_path:
+                frame, result, error = detector.process_image(image_path)
+                if error:
+                    print(error)
+                    continue
+            else:
+                frame, result = detector.capture_until_grid()
+                if frame is None or result is None:
+                    print("No se pudo leer la cámara.")
+                    continue
+
+            if result["grid_detected"]:
+                # ── Clasificar colores ──────────────────────────
+                palette   = result.get("palette", [])
+                color_map = build_color_map(palette)
+
+                # ── Enviar por serial ───────────────────────────
+                matrix = result.get("grid", {}).get("matrix", [])
+                send_grid_serial(detector.serial_port, matrix, color_map)
+
+                # ── Guardar y mostrar ───────────────────────────
+                saved = detector.save_grid_capture(frame, result)
+                detector.show_detected_grid(frame, result, color_map)
+                if saved:
+                    print(f'Guardado en {saved["image"]}')
+            else:
+                print("No se detectó la cuadrícula.")
+    finally:
+        detector.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    run_terminal_mode()

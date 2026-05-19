@@ -4,8 +4,8 @@
 #define AIN1 12
 #define AIN2 13
 #define PWMA 14
-#define BIN1 15
-#define BIN2 2
+#define BIN1 2
+#define BIN2 15
 #define PWMB 5
 #define SERVO_PIN 25
 
@@ -13,21 +13,27 @@
 #define KP 1.0
 #define KI 0.0
 #define KD 0.1
-#define VELOCIDAD_BASE 150
+#define VELOCIDAD_BASE 50
 
-void avanzar();
-void retroceder();
+void avanzar(int tiempo);
+void retroceder(int tiempo);
+void avanza();
+void avanza(int pwm);
+void reversa();
+void reversa(int pwm);
+void izquierda();
+void izquierda(int pwm);
+void derecha();
+void derecha(int pwm);
 void girarIzquierda();
 void girarDerecha();
-void avanzar_hasta_linea();
+void detenerMotores();
 
 void girarGrados(float grados);
 void inicializarServo();
 void mover_servos(int angulo);
 
 // Funciones PID
-float calcularPosicionLinea();
-void controlarPID(float posicion);
 void ajustarMotores(int velocidadIzq, int velocidadDer);
 
 #endif // MOTORES_H
