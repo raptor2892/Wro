@@ -4,10 +4,10 @@
 #define AIN1 12
 #define AIN2 13
 #define PWMA 14
-#define BIN1 2
-#define BIN2 15
-#define PWMB 5
-#define SERVO_PIN 25
+#define BIN1 26
+#define BIN2 27
+#define PWMB 25
+#define SERVO_PIN 33
 
 // Constantes PID
 #define KP 1.0
@@ -28,14 +28,11 @@ void derecha(int pwm);
 void girarIzquierda();
 void girarDerecha();
 void detenerMotores();
-<<<<<<< HEAD
-=======
-void avanzar_hasta_linea();
->>>>>>> a9d26d1bb75b58abf3071deb52fe26dd5f5cc306
 
 void girarGrados(float grados);
 void inicializarServo();
 void mover_servos(int angulo);
+void iniciarMotores();
 
 // Funciones PID
 void ajustarMotores(int velocidadIzq, int velocidadDer);

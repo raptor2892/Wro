@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from tkinter import TRUE
 
 import serial
 
@@ -45,7 +46,7 @@ log = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 PORT         = "COM3"
 BAUD_RATE    = 115200
-SIMULATE     = False    # True = sin hardware | False = con ESP32
+SIMULATE     = False # True = sin hardware | False = con ESP32
 WINDOW_TITLE = "LineFollowerWRO"   # sin espacios ni caracteres especiales
 # ══════════════════════════════════════════════════════════════════════════════
 

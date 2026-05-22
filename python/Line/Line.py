@@ -1,3 +1,4 @@
+from __future__ import annotations
 import cv2
 import numpy as np
 import serial
@@ -12,65 +13,16 @@ from line_constants import (
     CAMERA_FPS,
     CAMERA_HEIGHT,
     CAMERA_WIDTH,
-    DARK_LINE_HSV_MAX,
-    DARK_LINE_HSV_MIN,
     DEFAULT_BAUD_RATE,
     DEFAULT_CAMERA_INDEX,
     DEFAULT_SERIAL_PORT,
     EXIT_KEY,
-    LEFT_TURN_ERROR_THRESHOLD_PX,
-    LINE_DETECTION_RATIO,
     MASK_KERNEL_SIZE,
-    MASK_POINTS,
-    MAX_FRAMES_WITHOUT_LINE,
-    RIGHT_TURN_ERROR_THRESHOLD_PX,
-    SIGNAL_ROW_FRACTION,
 )
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CONFIGURACION PID  <- ajusta estos valores
-# ══════════════════════════════════════════════════════════════════════════════
-PID_KP          = 0.4    # Proporcional  — cuanto corrige por pixel de error
-PID_KI          = 0.001  # Integral      — corrige error acumulado (empieza en 0)
-PID_KD          = 0.9    # Derivativo    — amortigua oscilaciones
-
-BASE_SPEED      = 220    # Velocidad base de ambos motores (0-255)
-MAX_SPEED       = 255    # Limite superior
-MIN_SPEED       = 80     # Limite inferior (evita que el motor se detenga)
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class PIDController:
-    def __init__(self, kp, ki, kd):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self._integral   = 0.0
-        self._prev_error = 0.0
-        self._prev_time  = time.time()
-
-    def reset(self):
-        self._integral   = 0.0
-        self._prev_error = 0.0
-        self._prev_time  = time.time()
-
-    def compute(self, error: float) -> float:
-        """Devuelve la correccion PID dado el error en pixeles."""
-        now = time.time()
-        dt  = now - self._prev_time
-        if dt <= 0:
-            dt = 1e-3
-
-        self._integral  += error * dt
-        # Anti-windup: limita el integral para que no explote
-        self._integral   = max(-500, min(500, self._integral))
-
-        derivative       = (error - self._prev_error) / dt
-        correction       = self.kp * error + self.ki * self._integral + self.kd * derivative
-
-        self._prev_error = error
-        self._prev_time  = now
-        return correction
+# ── Configuración de la Zona de Visión (ROI Central) ─────────────────────────
+ROI_TOP_MARGIN    = 0.30  # Ignora el 30% superior
+ROI_BOTTOM_MARGIN = 0.70  # Ignora a partir del 70%
 
 
 class LineFollower:
@@ -80,33 +32,35 @@ class LineFollower:
         self.serial_port  = serial_port
         self.baud_rate    = baud_rate
 
+        print(f"Abriendo cámara {self.camera_index} (Modo de Selección Automática)...")
+        # ── SOLUCIÓN CÁMARA USB: Quitamos el backend rígido para forzar compatibilidad ──
         self.camera = cv2.VideoCapture(self.camera_index)
+        
         if not self.camera.isOpened():
-            print(f"ERROR: No se pudo abrir la camara {self.camera_index}.")
+            print(f"ERROR: No se pudo abrir la cámara {self.camera_index}.")
             sys.exit(1)
 
-        self.serial_conectado = False
-        self.arduino          = None
-
-        self.skip_mode             = False
-        self.skip_frames           = 0
-        self.last_movement         = "A"
-        self.frames_without_line   = 0
-        self.max_frames_without_line = MAX_FRAMES_WITHOUT_LINE
-        self.alignment_threshold   = ALIGNMENT_THRESHOLD_PX
-
+        # Configuración de rendimiento de la cámara
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.camera.set(cv2.CAP_PROP_FPS,          CAMERA_FPS)
+        self.camera.set(cv2.CAP_PROP_EXPOSURE, -5) # Forzar exposición baja anti-reflejos
 
-        self.lower_hsv = np.array(DARK_LINE_HSV_MIN)
-        self.upper_hsv = np.array(DARK_LINE_HSV_MAX)
+        print("Calentando sensor dinámicamente...")
+        for _ in range(20):
+            ret, _ = self.camera.read()
+            if ret: 
+                break 
 
-        self.pid = PIDController(PID_KP, PID_KI, PID_KD)
+        self.serial_conectado = False
+        self.arduino          = None
+        self.alignment_threshold = ALIGNMENT_THRESHOLD_PX
+
+        # Estado para evitar ráfagas repetidas del mismo cruce (Mapeo por flancos)
+        self.mark_left_active = False
+        self.mark_right_active = False
 
         self._setup_serial()
-
-    # ── Serial ─────────────────────────────────────────────────────────────────
 
     def _setup_serial(self):
         try:
@@ -116,156 +70,151 @@ class LineFollower:
             print(f"ESP32 conectado en {self.serial_port} @ {self.baud_rate} baud")
         except Exception as e:
             self.serial_conectado = False
-            print(f"ESP32 no detectado en {self.serial_port}: {e}")
-            print("Modo simulacion (solo video)...")
+            print(f"ESP32 no detectado en {self.serial_port}: {e}\nModo simulacion activo...")
 
     def send_command(self, command: str):
-        """Envia cualquier comando terminado en \\n."""
         if self.serial_conectado and self.arduino:
             try:
                 self.arduino.write((command + "\n").encode("utf-8"))
-                if self.arduino.in_waiting > 0:
-                    resp = self.arduino.readline().decode("utf-8", errors="ignore").strip()
-                    if resp:
-                        print(f"<- ESP32: {resp}")
             except Exception as e:
                 print(f"Error serial: {e}")
         else:
-            print(f"[SIM] {command}")
+            print(f"[SIM] Comando: {command}")
 
-    def send_pid(self, vel_izq: int, vel_der: int):
-        """Envia velocidades PID: PID:velIzq,velDer"""
-        vel_izq = max(MIN_SPEED, min(MAX_SPEED, vel_izq))
-        vel_der = max(MIN_SPEED, min(MAX_SPEED, vel_der))
-        self.send_command(f"PID:{vel_izq},{vel_der}")
-
-    # ── Vision ─────────────────────────────────────────────────────────────────
+    def send_error(self, error: float):
+        if self.serial_conectado and self.arduino:
+            try:
+                # 1. Aseguramos que el error sea tratado rigurosamente como flotante
+                val_error = float(error)
+                
+                # 2. Construimos el string con una estructura limpia
+                mensaje = f"ERROR:{val_error:.2f}\n"
+                
+                # 3. Enviamos al puerto serial de forma segura
+                self.arduino.write(mensaje.encode("utf-8"))
+                
+                # 4. Print de diagnóstico limpio para telemetría
+                print(f"-> [SERIAL] Error enviado: {val_error:+.2f} px")
+                
+            except (ValueError, TypeError) as e:
+                # Captura si por alguna razón 'error' no era un número válido
+                print(f"[VISIÓN ERROR] Dato de error inválido recibido: {error} ({e})")
+            except Exception as e:
+                # Captura problemas físicos del puerto (desconexiones o saturación)
+                print(f"[SERIAL ERROR] No se pudo escribir en el puerto: {e}")
+        else:
+            print(f"[SIM] Error simulado: {error:.2f} px")
 
     def process_frame(self, frame):
-        hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self.lower_hsv, self.upper_hsv)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (15, 15), 0)
+        _, mask = cv2.threshold(blurred, 90, 255, cv2.THRESH_BINARY_INV)
+        
         kernel = np.ones(MASK_KERNEL_SIZE, np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel) 
         return mask
 
-    def get_line_centers(self, mask, points=MASK_POINTS):
-        height, width = mask.shape
-        step = height // (points + 1)
-        positions = []
-        for i in range(1, points + 1):
-            y   = i * step
-            idx = np.where(mask[y, :] > 0)[0]
-            positions.append((int(np.mean(idx)), y) if len(idx) > 0 else None)
-        return positions
-
-    def get_error(self, positions, frame_width) -> float | None:
-        """Error en pixeles del punto 3 respecto al centro del frame."""
+    def get_contour_center(self, mask, frame_width, frame_height) -> tuple[float | None, tuple[int, int] | None, list]:
+        y_start = int(frame_height * ROI_TOP_MARGIN)
+        y_end   = int(frame_height * ROI_BOTTOM_MARGIN)
+        
+        roi_mask = np.zeros_like(mask)
+        roi_mask[y_start:y_end, :] = mask[y_start:y_end, :]
+        
+        contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None, None, []
+            
+        largest_contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(largest_contour) < 200:
+            return None, None, []
+            
+        M = cv2.moments(largest_contour)
+        if M["m00"] == 0:
+            return None, None, []
+            
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        
         center_x = frame_width // 2
-        point3   = positions[2] if len(positions) > 2 else None
-        if point3 is None:
-            return None
-        return float(point3[0] - center_x)
+        error = float(cx - center_x)
+        return error, (cx, cy), largest_contour
 
-    def detect_horizontal_line(self, mask) -> bool:
+    def detect_lateral_markers(self, mask):
         height, width = mask.shape
-        y   = int(height * SIGNAL_ROW_FRACTION)
-        return np.sum(mask[y, :] > 0) > (LINE_DETECTION_RATIO * width)
-
-    # ── Loop principal ──────────────────────────────────────────────────────────
+        y_start = int(height * ROI_TOP_MARGIN)
+        y_end   = int(height * ROI_BOTTOM_MARGIN)
+        margin_x = int(width * 0.15)
+        
+        roi_left  = mask[y_start:y_end, 0:margin_x]
+        roi_right = mask[y_start:y_end, width-margin_x:width]
+        
+        left_detected  = (np.sum(roi_left > 0) / roi_left.size) > 0.35
+        right_detected = (np.sum(roi_right > 0) / roi_right.size) > 0.35
+        return left_detected, right_detected, y_start, y_end, margin_x
 
     def run(self):
-        print("\n--- Seguidor de Linea con PID ---")
-        print(f"Puerto: {self.serial_port} | Baud: {self.baud_rate}")
-        print(f"KP={PID_KP}  KI={PID_KI}  KD={PID_KD}  Base={BASE_SPEED}")
-        print("Presiona 'q' para salir.\n")
-
+        print("\n--- Seguidor de Linea Optimizado (Modo Transmisión Pura) ---")
         while True:
             ret, frame = self.camera.read()
             if not ret:
-                print("Error capturando frame.")
                 break
 
-            frame     = cv2.flip(frame, 1)
-            mask      = self.process_frame(frame)
-            positions = self.get_line_centers(mask)
-            error     = self.get_error(positions, frame.shape[1])
-            center_x  = frame.shape[1] // 2
+            frame = cv2.flip(frame, 1)
+            mask  = self.process_frame(frame)
+            height, width = frame.shape[:2]
+            center_x = width // 2
 
-            # ── Deteccion de interseccion ───────────────────────────────────
-            if self.detect_horizontal_line(mask):
-                self.skip_mode   = True
-                self.skip_frames = 20
-                self.pid.reset()
-                cv2.putText(frame, "INTERSECCION", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            # 1. Obtener error de la línea central
+            error, centroid, main_contour = self.get_contour_center(mask, width, height)
 
-            # ── SKIP MODE: avanza recto ignorando la interseccion ───────────
-            if self.skip_mode:
-                self.send_pid(BASE_SPEED, BASE_SPEED)
-                self.skip_frames -= 1
-                if self.skip_frames <= 0:
-                    self.skip_mode = False
-                cv2.putText(frame, "Ignorando cruce", (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # 2. Obtener estado de los ROIs laterales para intersecciones
+            left_on, right_on, y_start, y_end, margin_x = self.detect_lateral_markers(mask)
 
-            # ── SIN LINEA ───────────────────────────────────────────────────
-            elif error is None:
-                self.frames_without_line += 1
-                if self.frames_without_line > self.max_frames_without_line:
-                    # Reversa suave
-                    self.send_command("R")
-                    cv2.putText(frame, "Sin linea - Reversa", (10, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                else:
-                    # Mantiene ultimo comando
-                    cv2.putText(frame, "Buscando linea...", (10, 60),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            # Enviar marcas laterales al ESP32 solo en el flanco de subida (detección inicial)
+            if left_on and not self.mark_left_active:
+                self.send_command("MARK:L")
+                print("-> [VISIÓN] MARK:L")
+            self.mark_left_active = left_on
 
-            # ── MODO PID NORMAL ─────────────────────────────────────────────
-            else:
-                self.frames_without_line = 0
-                correction = self.pid.compute(error)
+            if right_on and not self.mark_right_active:
+                self.send_command("MARK:R")
+                print("-> [VISIÓN] MARK:R")
+            self.mark_right_active = right_on
 
-                # Error > 0 → linea a la derecha → motor izq mas rapido
-                # Error < 0 → linea a la izquierda → motor der mas rapido
-                vel_izq = int(BASE_SPEED + correction)
-                vel_der = int(BASE_SPEED - correction)
-
-                self.send_pid(vel_izq, vel_der)
-
-                # UI
+            # 3. ── FLUJO CORRECTO: Envío de error directo sin importar las marcas ──
+            if error is not None:
+                self.send_error(error)
+                
+                # HUD en pantalla: Estado del error
                 alineado = abs(error) <= self.alignment_threshold
-                color    = (0, 255, 0) if alineado else (0, 165, 255)
-                estado   = "ALINEADO" if alineado else f"Error: {error:+.0f}px"
-                cv2.putText(frame, estado, (10, 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                cv2.putText(frame, f"PID: {correction:+.1f}  L:{int(max(MIN_SPEED,min(MAX_SPEED,vel_izq)))} R:{int(max(MIN_SPEED,min(MAX_SPEED,vel_der)))}", 
-                            (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+                color_txt = (0, 255, 0) if alineado else (0, 165, 255)
+                cv2.putText(frame, f"Error: {error:+.1f}px", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_txt, 2)
+            else:
+                cv2.putText(frame, "LINEA PERDIDA", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-            # ── Dibujar puntos ──────────────────────────────────────────────
-            for i, point in enumerate(positions):
-                if point is None:
-                    continue
-                if i == 2:
-                    col = (0, 255, 0) if (error is not None and abs(error) <= self.alignment_threshold) else (0, 0, 255)
-                    cv2.circle(frame, point, 8, col, -1)
-                    cv2.putText(frame, "P3", (point[0] + 10, point[1]),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
-                else:
-                    cv2.circle(frame, point, 5, (0, 255, 255), -1)
+            # ── Dibujar HUD Visual de Competencia ──
+            cv2.line(frame, (0, y_start), (width, y_start), (0, 255, 255), 1) 
+            cv2.line(frame, (0, y_end), (width, y_end), (0, 255, 255), 1) 
+            cv2.line(frame, (center_x, 0), (center_x, height), (255, 0, 0), 1)
 
-            # Lineas de referencia
-            cv2.line(frame, (center_x, 0), (center_x, frame.shape[0]), (255, 0, 0), 2)
-            cv2.line(frame, (center_x - self.alignment_threshold, 0),
-                     (center_x - self.alignment_threshold, frame.shape[0]), (0, 200, 0), 1)
-            cv2.line(frame, (center_x + self.alignment_threshold, 0),
-                     (center_x + self.alignment_threshold, frame.shape[0]), (0, 200, 0), 1)
+            # Cajas de detección lateral (Verde si detecta marca, Rojo si está vacía)
+            cv2.rectangle(frame, (0, y_start), (margin_x, y_end), (0, 255, 0) if left_on else (0, 0, 255), 2)
+            cv2.rectangle(frame, (width - margin_x, y_start), (width, y_end), (0, 255, 0) if right_on else (0, 0, 255), 2)
 
-            cv2.imshow("Seguidor de Linea - PID", frame)
-            cv2.imshow("Mascara HSV", mask)
+            if len(main_contour) > 0 and centroid:
+                cv2.drawContours(frame, [main_contour], -1, (255, 0, 255), 2)
+                cv2.circle(frame, centroid, 6, (255, 255, 0), -1)
 
-            if cv2.waitKey(1) & 0xFF == EXIT_KEY:
+            cv2.imshow("Camara Robot - Vista Principal", frame)
+            cv2.imshow("Mascara Threshold", mask)
+
+            # Salida limpia con la tecla de escape configurada
+            key = cv2.waitKey(1) & 0xFF
+            exit_val = ord(EXIT_KEY) if isinstance(EXIT_KEY, str) else EXIT_KEY
+            if key == exit_val:
                 self.send_command("S")
                 break
 
@@ -277,13 +226,10 @@ class LineFollower:
         if self.serial_conectado and self.arduino:
             self.send_command("S")
             self.arduino.close()
-            print("ESP32 desconectado.")
+            print("Conexiones cerradas.")
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Lanzado por el daemon:  python Line.py COM3 115200
-    # Lanzado solo:           python Line.py           (usa defaults de line_constants)
     port  = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERIAL_PORT
     baud  = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_BAUD_RATE
     index = int(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_CAMERA_INDEX
