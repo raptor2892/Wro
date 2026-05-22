@@ -282,7 +282,7 @@ class LineFollower:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Lanzado por el daemon:  python Line.py COM3 9600
+    # Lanzado por el daemon:  python Line.py COM3 115200
     # Lanzado solo:           python Line.py           (usa defaults de line_constants)
     port  = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SERIAL_PORT
     baud  = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_BAUD_RATE

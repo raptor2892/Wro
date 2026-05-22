@@ -12,7 +12,7 @@
 
 <<<<<<< HEAD
 // ── Configuración ─────────────────────────────────────────────────────────────
-static constexpr unsigned long SERIAL_BAUD_RATE  = 9600;
+static constexpr unsigned long SERIAL_BAUD_RATE  = 115200;
 static constexpr unsigned long TIMEOUT_SIMPLE_MS = 300;  // A/D/I/R
 static constexpr unsigned long TIMEOUT_PID_MS    = 50;  // PID (depende del framerate)
 
@@ -25,7 +25,7 @@ static bool          pidMode         = false;
 static void configurePins() {
 =======
 namespace {
-constexpr unsigned long SERIAL_BAUD_RATE = 9600;
+constexpr unsigned long SERIAL_BAUD_RATE = 115200;
 constexpr unsigned long COMMAND_TIMEOUT_MS = 250;
 
 char lastCommand = 'S';
