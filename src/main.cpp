@@ -5,11 +5,12 @@
 
 void setup() {
     // Configura pines, inicializa BNO, arranca Servo y frena motores por seguridad
-    beginLineFollower();
-    avanzarTiempo(1000);
+    beginLineFollower(); // Avanza 3 segundos a full, luego lento hasta encontrar intersección y para
 }
 
 void loop() {
+    leerYaw(); // Mantiene el buffer serial leyendo los comandos de error PID y marcas de intersección // Avanza 3 segundos a full, luego lento hasta encontrar intersección y para
+    avanzar(200);
     // Mantiene el buffer serial leyendo los comandos de error PID y marcas de intersección
     // Avanza 3 segundos a full, luego lento hasta encontrar intersección y para
 

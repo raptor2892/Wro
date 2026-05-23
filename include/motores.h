@@ -5,9 +5,10 @@
 #define AIN2 13
 #define PWMA 14
 #define BIN1 26
-#define BIN2 27
+#define BIN2 33
 #define PWMB 25
-#define SERVO_PIN 33
+#define SERVO_PIN 27
+
 
 // Constantes PID
 #define KP 1.0

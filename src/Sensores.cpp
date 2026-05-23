@@ -7,7 +7,8 @@ bool linea_ancha = false;
 
 Adafruit_BNO08x   bno08x(-1);
 sh2_SensorValue_t sensorValue;
-float             yaw_inicial = 0.0f;
+float             yaw_inicial  = 0.0f;
+float             ultimoYaw    = 0.0f;  // <-- último yaw válido sin bloquear
 
 // ── Escaneo I2C ───────────────────────────────────────────────────────────────
 uint8_t scanI2C() {
@@ -27,17 +28,13 @@ uint8_t scanI2C() {
         }
     }
 
-    if (!found) {
-        Serial.println("  Ningun dispositivo encontrado.");
-    }
-
+    if (!found) Serial.println("  Ningun dispositivo encontrado.");
     return found;
 }
 
 // ── Habilitar reportes del BNO085 ─────────────────────────────────────────────
 void setReports() {
-    // 50 000 µs = 20 Hz — suficiente para corrección de heading
-    if (!bno08x.enableReport(SH2_ROTATION_VECTOR, 50000)) {
+    if (!bno08x.enableReport(SH2_ROTATION_VECTOR, 10000)) {  // 10ms = 100Hz
         Serial.println("WARNING: no se pudo habilitar SH2_ROTATION_VECTOR");
     }
     if (!bno08x.enableReport(SH2_ACCELEROMETER, 50000)) {
@@ -89,24 +86,16 @@ bool iniciarBNO() {
     Serial.println("Reportes habilitados.");
 
     delay(100);
-    yaw_inicial = leerYaw();
+    ultimoYaw  = leerYaw();
+    yaw_inicial = ultimoYaw;
     return true;
 }
 
-// ── Lectura de Yaw ────────────────────────────────────────────────────────────
-//
-//  Timeout reducido a 15 ms (vs 50 ms original) para no bloquear el loop PID.
-//  Si no llega un dato fresco en ese tiempo, devuelve el último yaw conocido
-//  (yaw_inicial) para que el corrector no aplique una corrección espuria.
-//
+// ── Lectura de Yaw NO BLOQUEANTE ──────────────────────────────────────────────
+// Si hay dato nuevo lo procesa y actualiza ultimoYaw.
+// Si no hay dato, regresa el último valor válido al instante.
 float leerYaw() {
-    unsigned long deadline = millis() + 15;   // ← 15 ms máximo de espera
-
-    while (millis() < deadline) {
-        if (!bno08x.getSensorEvent(&sensorValue)) {
-            continue;
-        }
-
+    if (bno08x.getSensorEvent(&sensorValue)) {
         if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
             float roll, pitch, yaw;
             quaternionToEuler(
@@ -116,12 +105,9 @@ float leerYaw() {
                 sensorValue.un.rotationVector.k,
                 roll, pitch, yaw);
 
-            // Normalizar a [0, 360)
             if (yaw < 0.0f) yaw += 360.0f;
-            return yaw;
+            ultimoYaw = yaw;
         }
     }
-
-    // Sin dato fresco: devuelve el último yaw conocido
-    return yaw_inicial;
+    return ultimoYaw;
 }
