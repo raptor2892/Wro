@@ -60,90 +60,163 @@ void parar() {
   motorDer(0);
 }
 
-// ===================== GIRO CON ÁNGULO OPTIMIZADO =====================
-// ===================== GIRO CON REVERSA DINÁMICA SI SE PASA =====================
+// ===================== HELPERS =====================
+
+// Diferencia angular mínima entre dos ángulos en [0,360)
+// Devuelve valor en (-180, 180]: positivo = girar CW, negativo = girar CCW
+static float angularDiff(float objetivo, float actual) {
+  float diff = objetivo - actual;
+  while (diff >  180.0f) diff -= 360.0f;
+  while (diff < -180.0f) diff += 360.0f;
+  return diff;
+}
+
+// Filtro EMA (Exponential Moving Average) para suavizar el yaw
+// alpha bajo = más suavizado, alpha alto = más respuesta
+static float filtrarYaw(float yawNuevo, float yawPrev, float alpha = 0.25f) {
+  return alpha * yawNuevo + (1.0f - alpha) * yawPrev;
+}
+
+// ===================== GIRO CON ÁNGULO — PD MEJORADO =====================
+//
+//  Mejoras respecto a la versión anterior:
+//
+//  1. Wrap-around correcto: todo en [0,360), angularDiff() para el error.
+//  2. Filtro EMA en el yaw antes de calcular el derivativo, elimina spikes de ruido.
+//  3. Zona muerta en el derivativo: si |derror/dt| < DEAD_BAND no se aplica Kd.
+//  4. Criterio de salida por ventana de estabilidad: el robot debe mantenerse
+//     dentro de la tolerancia por N ciclos consecutivos antes de detenerse,
+//     en lugar de contar cruces de cero (que era frágil con oscilaciones).
+//  5. Timeout absoluto de seguridad para no quedarse en bucle infinito.
+//  6. Rampa de arranque: evita el golpe de corriente inicial en el peso.
+//  7. VEL_MIN sólo se aplica cuando |error| > TOLERANCIA (no se pelea contra
+//     la fricción cuando ya casi llegó).
+//
 void girarGrados(float grados) {
-  Serial.print("[girar] ");
-  Serial.print(grados);
-  Serial.println("deg");
-  
-  float yaw_inicial = leerYaw();
-  float yaw_actual = yaw_inicial;
-  float yaw_objetivo = yaw_inicial + grados;
+  if (abs(grados) < 0.5f) return;   // giro insignificante, ignorar
 
-  // Normalizar ángulos entre -180 y 180
-  while (yaw_objetivo > 180) yaw_objetivo -= 360;
-  while (yaw_objetivo < -180) yaw_objetivo += 360;
+  Serial.print("[girar PD+] ");
+  Serial.print(grados, 1);
+  Serial.println(" deg");
 
-  float diferencia = yaw_objetivo - yaw_actual;
-  if (diferencia > 180) diferencia -= 360;
-  if (diferencia < -180) diferencia += 360;
+  // ── Constantes (ajusta en pista) ─────────────────────────────────────────
+  constexpr float kd_giro        = 3.0f;   // ganancia proporcional
+  constexpr float kp_giro           = 5.5f;   // ganancia derivativa
+  constexpr float EMA_ALPHA    = 0.30f;  // suavizado del yaw (0.1=mucho, 0.5=poco)
+  constexpr float TOLERANCIA   = 1.2f;   // grados de error aceptable
+  constexpr float DEAD_BAND_D  = 15.0f;  // °/s mínimos para aplicar Kd (filtro de ruido)
+  constexpr int   VEL_MAX      = 255;
+  constexpr int   VEL_MIN      = 40;      // mínimo para vencer fricción
+  constexpr int   RAMPA_MS     = 80;     // tiempo de rampa de arranque
+  constexpr int   CICLOS_OK    = 8;      // ciclos consecutivos dentro de tolerancia para salir
+  constexpr unsigned long TIMEOUT_MS = 3000; // timeout de seguridad
 
-  float totalGrados = abs(grados);
-  
-  // Ajustes de dinámica
-  float ZONA_FRENADO = totalGrados * 0.40; 
-  float TOLERANCIA = 1.0; // Tolerancia más estricta ya que ahora puede regresar
-  
-  int VEL_MAX = 150;      
-  int VEL_MIN = 45;       
+  // ── Estado inicial ────────────────────────────────────────────────────────
+  float yawRaw      = leerYaw();          // [0, 360)
+  float yawFiltrado = yawRaw;
+  float yawObjetivo = yawRaw + grados;
+  while (yawObjetivo >= 360.0f) yawObjetivo -= 360.0f;
+  while (yawObjetivo <    0.0f) yawObjetivo += 360.0f;
 
-  // Usamos un contador de seguridad para evitar que oscile infinitamente si la fricción es rara
-  int intentosEstabilizacion = 0;
+  float error          = angularDiff(yawObjetivo, yawFiltrado);
+  float errorAnterior  = error;
+  float derivAnterior  = 0.0f;
 
-  while (abs(diferencia) > TOLERANCIA && intentosEstabilizacion < 100) {
-    float restante = abs(diferencia);
-    int vel = VEL_MAX;
-    
-    // 1. DIRECCIÓN DINÁMICA: Se recalcula en cada iteración
-    // Si la diferencia es positiva, debe girar en un sentido; si es negativa (se pasó), en el otro.
-    int dirIzq = (diferencia > 0) ? -1 : 1;
-    int dirDer = (diferencia > 0) ? 1 : -1;
+  int   ciclosEstable  = 0;
+  unsigned long tAnterior = micros();
+  unsigned long tInicio   = millis();
 
-    // 2. CONTROL DE VELOCIDAD
-    if (restante <= ZONA_FRENADO) {
-      vel = map(restante * 100, 0, ZONA_FRENADO * 100, VEL_MIN, VEL_MAX);
-    } else {
-      vel = VEL_MAX;
+  // ── Rampa de arranque ─────────────────────────────────────────────────────
+  // Sube suavemente de 0 a VEL_MIN en RAMPA_MS para no sacudir el peso.
+  {
+    int dir = (error > 0) ? 1 : -1;
+    unsigned long tRampa = millis();
+    while (millis() - tRampa < (unsigned long)RAMPA_MS) {
+      float t   = (float)(millis() - tRampa) / RAMPA_MS;
+      int   vel = (int)(t * VEL_MIN);
+      motorIzq(-dir * vel);
+      motorDer( dir * vel);
+      delay(4);
     }
-    vel = constrain(vel, VEL_MIN, VEL_MAX);
-    
-    // Si cambió de sentido para corregir, aumentamos el contador de estabilización
-    if ((grados > 0 && diferencia < 0) || (grados < 0 && diferencia > 0)) {
-      intentosEstabilizacion++;
-      // Reducimos un poco la velocidad de corrección para evitar que vuelva a pasarse de largo
-      vel = constrain(vel, VEL_MIN, VEL_MAX - 20); 
-    }
-
-    motorIzq(dirIzq * vel);
-    motorDer(dirDer * vel);
-
-    delay(5); 
-    
-    yaw_actual = leerYaw();
-    diferencia = yaw_objetivo - yaw_actual;
-
-    if (diferencia > 180) diferencia -= 360;
-    if (diferencia < -180) diferencia += 360;
   }
 
-  // --- FRENO ACTIVO FINAL ---
-  // Al salir del bucle (porque entró en la tolerancia), aplicamos un contra-pulso corto
-  // basándonos en la última dirección detectada para clavarlo en el sitio.
-  int ultimoDirIzq = (diferencia > 0) ? -1 : 1;
-  int ultimoDirDer = (diferencia > 0) ? 1 : -1;
-  
-  motorIzq(-ultimoDirIzq * VEL_MIN);
-  motorDer(-ultimoDirDer * VEL_MIN);
-  delay(25); 
+  // ── Bucle PD principal ────────────────────────────────────────────────────
+  while (ciclosEstable < CICLOS_OK) {
 
+    // Timeout de seguridad
+    if (millis() - tInicio > TIMEOUT_MS) {
+      Serial.println(">>> [girar PD+] TIMEOUT — forzando parada");
+      break;
+    }
+
+    // dt en segundos (usando micros para precisión)
+    unsigned long tActual = micros();
+    float dt = (tActual - tAnterior) / 1e6f;
+    if (dt <= 0.0f) dt = 0.005f;
+    tAnterior = tActual;
+
+    // Leer y filtrar yaw
+    yawRaw      = leerYaw();
+    yawFiltrado = filtrarYaw(yawRaw, yawFiltrado, EMA_ALPHA);
+
+    // Error angular con wrap-around correcto
+    error = angularDiff(yawObjetivo, yawFiltrado);
+
+    // ── Derivativo con zona muerta ────────────────────────────────────────
+    float deriv = (error - errorAnterior) / dt;
+
+    // Suavizar el derivativo con EMA también
+    deriv = 0.4f * deriv + 0.6f * derivAnterior;
+
+    // Zona muerta: ignorar derivativo si el cambio de ángulo es sólo ruido
+    float derivActivo = (abs(deriv) > DEAD_BAND_D) ? deriv : 0.0f;
+
+    float salidaPD = kd_giro * error + kp_giro * derivActivo;
+
+    errorAnterior  = error;
+    derivAnterior  = deriv;
+
+    // ── Velocidad ─────────────────────────────────────────────────────────
+    int vel = (int)abs(salidaPD);
+    vel = constrain(vel, 0, VEL_MAX);
+
+    // VEL_MIN sólo si todavía estamos lejos de la meta
+    if (vel > 0 && vel < VEL_MIN && abs(error) > TOLERANCIA) {
+      vel = VEL_MIN;
+    }
+
+    // ── Dirección ─────────────────────────────────────────────────────────
+    // salidaPD positiva → error positivo → necesita girar CW
+    int dir = (salidaPD > 0) ? 1 : -1;
+
+    motorIzq(-dir * vel);
+    motorDer( dir * vel);
+
+    // ── Criterio de salida por estabilidad ───────────────────────────────
+    if (abs(error) <= TOLERANCIA) {
+      ciclosEstable++;
+    } else {
+      ciclosEstable = 0;   // cualquier salida de tolerancia reinicia el contador
+    }
+
+    // Debug opcional (descomenta si necesitas tuning)
+    // Serial.printf("err=%.2f yaw=%.2f vel=%d\n", error, yawFiltrado, vel * dir);
+
+    delay(6);   // ~160 Hz
+  }
+
+  // ── Freno electrónico ─────────────────────────────────────────────────────
   parar();
-  Serial.println(">>> Giro corregido y completado");
+
+  Serial.print(">>> Giro PD+ completado — error final: ");
+  Serial.print(angularDiff(yawObjetivo, leerYaw()), 2);
+  Serial.println(" deg");
 }
+
 // ===================== SERVO =====================
 void inicializarServo() {
   servoMotor.attach(SERVO_PIN);
-  servoMotor.write(90); // Posición inicial neutra
+  servoMotor.write(90);
   delay(500);
 }
 

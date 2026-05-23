@@ -8,33 +8,39 @@
 
 // ── Configuración ─────────────────────────────────────────────────────────────
 static constexpr unsigned long SERIAL_BAUD_RATE  = 115200;
-static constexpr unsigned long TIMEOUT_SIMPLE_MS = 300;  // A/D/I/R
-static constexpr unsigned long TIMEOUT_PID_MS    = 150;  // Tolerancia para recepción del video
+static constexpr unsigned long TIMEOUT_SIMPLE_MS = 300;
+static constexpr unsigned long TIMEOUT_PID_MS    = 150;
 
-// ── Configuración PID Optimizado para Rectas de Competencia ───────────────────
-static constexpr float PID_KP     = 0.15;  // Súbelo un poco para que responda con más autoridad
-static constexpr float PID_KI     = 0.00;  // Mantener en 0
-static constexpr float PID_KD     = 0.05; // Amortiguación suave para el ruido del sensor
+// ── Configuración corrector de heading (BNO085 - Timón Principal) ─────────────
+static constexpr float HEADING_KP = 3.0f;
+static constexpr float HEADING_KD = 1.5f;
 
-static constexpr int BASE_SPEED   = 240;
-static constexpr int MAX_SPEED    = 255;
-static constexpr int MIN_SPEED    = 210;   // Piso alto para no perder inercia lineal
+static int           BASE_SPEED = 200;   // modificable en runtime
+static constexpr int MAX_SPEED  = 220;
+static constexpr int MIN_SPEED  = 120;
+float yaw_recta = 0.0f; // Ahora este valor será dinámico y aprenderá de la cámara
 
 // ── Estado interno ────────────────────────────────────────────────────────────
 static char          lastCommand     = 'S';
 static unsigned long lastCommandTime = 0;
 static bool          pidMode         = false;
 
-// Variables de estado para el cálculo PID
-static float         integralError   = 0.0;
-static float         prevError       = 0.0;
-static unsigned long prevTimePid     = 0;
+// PID / Historial de línea (Cámara)
+static float         integralError = 0.0f;
+static float         prevError     = 0.0f;
+static unsigned long prevTimePid   = 0;
 
-// ── Estado de Intersecciones de las Zonas Rojas ───────────────────────────────
+// Corrector de heading (BNO)
+static float         prevHeadingError = 0.0f;
+
+// ── Estado de Intersecciones ──────────────────────────────────────────────────
 static bool          leftMarkerDetected  = false;
 static bool          rightMarkerDetected = false;
+static bool          markDetected        = false;
 static unsigned long lastLeftMarkerTime  = 0;
 static unsigned long lastRightMarkerTime = 0;
+
+
 
 // ── Helpers privados ──────────────────────────────────────────────────────────
 static void configurePins() {
@@ -46,20 +52,16 @@ static void configurePins() {
     pinMode(PWMB, OUTPUT);
 }
 
-static void stopMotors() {
-    detenerMotores();
-}
-
-static void sendPiCommand(const char* command) {
-    Serial.println(command);
-}
+static void stopMotors()                   { detenerMotores(); }
+static void sendPiCommand(const char* cmd) { Serial.println(cmd); }
 
 // ── Comandos simples: A / D / I / R / S ──────────────────────────────────────
 static void executeCommand(char command) {
     if (pidMode) {
-        integralError = 0.0;
-        prevError = 0.0;
-        pidMode = false;
+        integralError    = 0.0f;
+        prevError        = 0.0f;
+        prevHeadingError = 0.0f;
+        pidMode          = false;
     }
 
     switch (command) {
@@ -68,105 +70,122 @@ static void executeCommand(char command) {
         case 'I': izquierda();  break;
         case 'R': reversa(150); break;
         case 'S': stopMotors(); break;
-        default:  return;       // carácter desconocido → ignorar sin ACK
+        default:  return;
     }
 
     lastCommand     = command;
     lastCommandTime = millis();
-
     Serial.print("ACK:");
     Serial.println(command);
 }
 
-// ── Parser y Lógica PID ───────────────────────────────────────────────────────
-void parseErrorCommand(String input) {
-    String datos = input.substring(6);  // quita "ERROR:"
-    float error = datos.toFloat();
+// ── OPCIÓN A: MANTENER BNO EN RECTAS Y CÁMARA COMO SALVAVIDAS SUAVE ───────────
+// ── VARIABLES GLOBALES A COLOCAR AL INICIO ────────────────────────────────────
 
-    // ── FILTRO ZONA MUERTA (Deadband): Elimina el ruido en línea recta ──
-    if (abs(error) <= 10.0) {
-        error = 0.0;
-    }
+static float prev_yaw_bno = 0.0f; // Guardará el ángulo físico anterior del BNO
+
+// ── CONTROL SINTONIZADO ANTI-OSCILACIÓN CREADO POR TEC ────────────────────────
+bool en_linea_recta = false; // Indica si estamos en modo crucero recto (BNO bloqueado)
+void parseErrorCommand(String input) {
+    String datos     = input.substring(6);
+    float  errorLinea = datos.toFloat();
 
     unsigned long now = millis();
-    
-    if (!pidMode) {
-        prevTimePid = now;
-        integralError = 0.0;
-        prevError = error;
+    float dt = (now - prevTimePid) / 1000.0f;
+    if (dt <= 0.0f) dt = 0.001f;
+
+    // Umbral de tolerancia: 15 píxeles
+    if (abs(errorLinea) <= 25.0f) {
+        
+        // ── MUNDO 1: CRUCERO RECTO (PURO BNO085) ─────────────────────────────
+        // Si acabamos de entrar al centro, congelamos el ángulo actual como NUEVA META
+        if (!en_linea_recta) {
+            yaw_recta = leerYaw();
+            en_linea_recta = true;
+            prevHeadingError = 0.0f;
+        }
+
+        float headingError = leerYaw() - yaw_recta;
+        if (headingError >  180.0f) headingError -= 360.0f;
+        if (headingError < -180.0f) headingError += 360.0f;
+
+        float headingDerivative = (headingError - prevHeadingError) / dt;
+        // Un PD muy simple para mantener el chasis congelado en esa línea
+        float corrHeading = (4.0f * headingError) + (0.3f * headingDerivative);
+        prevHeadingError = headingError;
+
+        int velIzquierda = constrain((int)(BASE_SPEED + corrHeading), MIN_SPEED, MAX_SPEED);
+        int velDerecha   = constrain((int)(BASE_SPEED - corrHeading), MIN_SPEED, MAX_SPEED);
+        ajustarMotores(velDerecha, velIzquierda);
+
+    } else {
+        
+        // ── MUNDO 2: RECUPERACIÓN DE EMERGENCIA (PURA CÁMARA) ─────────────────
+        // Rompemos el bloqueo del BNO porque nos salimos de la zona segura
+        en_linea_recta = false; 
+
+        float derivative = (errorLinea - prevError) / dt;
+        // PID puramente visual, ignoramos el BNO por completo para no confundir motores
+        float corrLinea = (0.006f * errorLinea) + (0.04f * derivative);
+        prevError = errorLinea;
+
+        int velIzquierda = constrain((int)(BASE_SPEED + corrLinea), MIN_SPEED, MAX_SPEED);
+        int velDerecha   = constrain((int)(BASE_SPEED - corrLinea), MIN_SPEED, MAX_SPEED);
+        ajustarMotores(velDerecha, velIzquierda);
     }
 
-    float dt = (now - prevTimePid) / 1000.0; // Delta time en segundos
-    if (dt <= 0.0) dt = 0.001;               // Evitar división por cero
-
-    // Cálculo PID (Con Ki en 0.00, integralError se mantiene neutral)
-    integralError += error * dt;
-    
-    // Anti-windup
-    if (integralError > 500.0) integralError = 500.0;
-    if (integralError < -500.0) integralError = -500.0;
-
-    float derivative = (error - prevError) / dt;
-    float correction = (PID_KP * error) + (PID_KI * integralError) + (PID_KD * derivative);
-
-    prevError = error;
-    prevTimePid = now;
-
-    // Calcular las velocidades con la corrección
-    int velIzquierda = BASE_SPEED + correction;
-    int velDerecha   = BASE_SPEED - correction;
-
-    // Constreñir usando los límites de competencia establecidos
-    velIzquierda = constrain(velIzquierda, MIN_SPEED, MAX_SPEED);
-    velDerecha   = constrain(velDerecha, MIN_SPEED, MAX_SPEED);
-
-    // Enviamos las velocidades a los motores
-    ajustarMotores(velIzquierda, velDerecha);
-
-    lastCommand     = 'P'; 
+    prevTimePid     = now;
+    lastCommand     = 'P';
     lastCommandTime = millis();
     pidMode         = true;
 }
 
-// ── Parser para Marcas de Intersección ────────────────────────────────────────
+// ── Parser para Marcas ────────────────────────────────────────────────────────
 void parseMarkCommand(String input) {
     unsigned long now = millis();
-    
+
     if (input.equals("MARK:L")) {
         leftMarkerDetected = true;
+        markDetected       = true;
         lastLeftMarkerTime = now;
-        Serial.println("ACK:MARK_L"); 
-    } 
+        Serial.println("ACK:MARK_L");
+    }
     else if (input.equals("MARK:R")) {
         rightMarkerDetected = true;
+        markDetected        = true;
         lastRightMarkerTime = now;
         Serial.println("ACK:MARK_R");
     }
+    else if (input.equals("MARK")) {
+        markDetected = true;
+        Serial.println("ACK:MARK");
+    }
 }
 
-// ── API pública: comandos hacia Python ───────────────────────────────────────
+// ── API pública ───────────────────────────────────────────────────────────────
+
 void avanzarConLinea() {
+    yaw_recta = leerYaw(); // Sincroniza rumbo antes de pedir el flujo visual
     sendPiCommand("FOLLOW_LINE");
 }
 
 void detenerLinea() {
     sendPiCommand("STOP_LINE");
     stopMotors();
-    lastCommand = 'S';
-    pidMode     = false;
+    lastCommand      = 'S';
+    pidMode          = false;
+    prevHeadingError = 0.0f;
 }
 
-void detectarMosaico() {
-    sendPiCommand("DETECT_MOSAIC");
-}
+void detectarMosaico() { sendPiCommand("DETECT_MOSAIC"); }
 
-// ── API pública: Getters ─────────────────────────────────────────────────────
-bool checkLeftMarker() { return leftMarkerDetected; }
+bool checkLeftMarker()  { return leftMarkerDetected; }
 bool checkRightMarker() { return rightMarkerDetected; }
 
 void clearMarkers() {
-    leftMarkerDetected = false;
+    leftMarkerDetected  = false;
     rightMarkerDetected = false;
+    markDetected        = false;
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -175,8 +194,7 @@ void beginLineFollower() {
     configurePins();
 
     if (!iniciarBNO()) {
-        Serial.println("ERROR: BNO08x no inicializado");
-        return;
+        Serial.println("WARN: BNO085 no disponible, continuando sin IMU");
     }
 
     inicializarServo();
@@ -186,91 +204,111 @@ void beginLineFollower() {
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void updateLineFollower() {
-    // Leer y despachar todos los comandos pendientes en el buffer serial de golpe
     while (Serial.available() > 0) {
         String input = Serial.readStringUntil('\n');
         input.trim();
-
         if (input.length() == 0) continue;
 
-        if (input.startsWith("ERROR:")) {
-            parseErrorCommand(input);
-        } 
-        else if (input.startsWith("MARK:")) {
-            parseMarkCommand(input);
-        } 
-        else if (input.length() == 1) {
-            executeCommand(static_cast<char>(toupper(input[0])));
-        }
+        if      (input.startsWith("ERROR:")) parseErrorCommand(input);
+        else if (input.startsWith("MARK:"))  parseMarkCommand(input);
+        else if (input.equals("MARK"))        parseMarkCommand(input);
+        else if (input.length() == 1)         executeCommand(static_cast<char>(toupper(input[0])));
     }
 
-    // Watchdog: si Python deja de responder, frena el robot de seguridad
     unsigned long timeout = pidMode ? TIMEOUT_PID_MS : TIMEOUT_SIMPLE_MS;
     if (lastCommand != 'S' && (millis() - lastCommandTime > timeout)) {
         stopMotors();
-        lastCommand = 'S';
-        pidMode     = false;
+        lastCommand      = 'S';
+        pidMode          = false;
+        prevHeadingError = 0.0f;
         Serial.println("TIMEOUT: motores detenidos por falta de datos");
     }
 }
 
-// ── AVANZAR HASTA DETECTAR "N" CRUCES ESPECÍFICOS (Izquierda o Derecha) ──────
+// ── Navegación ────────────────────────────────────────────────────────────────
 void avanzarConLineaHasta(int crucesIzq, int crucesDer) {
     int contadorIzq = 0;
     int contadorDer = 0;
-    
     clearMarkers();
-    avanzarConLinea(); 
+    avanzarConLinea();   
 
-    while ((crucesIzq > 0 && contadorIzq < crucesIzq) || 
+    while ((crucesIzq > 0 && contadorIzq < crucesIzq) ||
            (crucesDer > 0 && contadorDer < crucesDer)) {
-         
-        updateLineFollower(); 
-
+        updateLineFollower();
         if (crucesIzq > 0 && checkLeftMarker()) {
             contadorIzq++;
             Serial.print("[NAV] Marca Izquierda #");
             Serial.println(contadorIzq);
-            clearMarkers(); 
+            clearMarkers();
         }
-
         if (crucesDer > 0 && checkRightMarker()) {
             contadorDer++;
             Serial.print("[NAV] Marca Derecha #");
             Serial.println(contadorDer);
             clearMarkers();
         }
-        
-        yield(); 
+        yield();
     }
 
     stopMotors();
     Serial.println("[NAV] Objetivo de cruces alcanzado. Motores en STOP.");
 }
 
-// ── AVANZAR HASTA DETECTAR "N" CRUCES CUALESQUIERA (Sin bloquear el flujo) ───
 void avanzarConLineaHastaCruce(int totalCruces) {
     int contadorCruces = 0;
-    
     clearMarkers();
     avanzarConLinea();
 
     while (contadorCruces < totalCruces) {
         updateLineFollower();
-
         if (checkLeftMarker() || checkRightMarker()) {
             contadorCruces++;
-            Serial.print("[NAV] Intersección detectada #");
+            Serial.print("[NAV] Interseccion #");
             Serial.println(contadorCruces);
-            
-            // ── OPTIMIZADO: Al limpiar los flags por flanco en Python, 
-            // ya no necesitamos demoras lentas de milisegundos aquí.
             clearMarkers();
         }
-        
         yield();
     }
 
     stopMotors();
     Serial.println("[NAV] Cruce(s) detectado(s). Motores en STOP.");
+}
+
+void avanzarTiempo(unsigned long tiempoMs) {
+    clearMarkers();
+    markDetected = false;
+    avanzarConLinea();
+
+    // Fase 1: velocidad normal por el tiempo indicado
+    unsigned long inicio = millis();
+    while (millis() - inicio < tiempoMs) {
+        updateLineFollower();
+        yield();
+    }
+
+    // Fase 2: baja velocidad y espera 1 MARK
+    BASE_SPEED = 100;
+    Serial.println("[NAV] Buscando interseccion a baja velocidad...");
+
+    while (!markDetected) {
+        updateLineFollower();
+        yield();
+    }
+    markDetected = false;
+    Serial.println("[NAV] MARK detectado, frenando...");
+
+    // Fase 3: avanza un poco mas lento y se detiene
+    BASE_SPEED = 60;
+    unsigned long pausa = millis();
+    while (millis() - pausa < 200) {
+        updateLineFollower();
+        yield();
+    }
+
+    BASE_SPEED       = 240;
+    markDetected     = false;
+    prevHeadingError = 0.0f;
+    clearMarkers();
+    stopMotors();
+    Serial.println("[NAV] Detenido sobre la interseccion.");
 }

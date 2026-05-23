@@ -4,6 +4,8 @@ import numpy as np
 import serial
 import time
 import sys
+import platform
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,9 +22,22 @@ from line_constants import (
     MASK_KERNEL_SIZE,
 )
 
-# ── Configuración de la Zona de Visión (ROI Central) ─────────────────────────
-ROI_TOP_MARGIN    = 0.30  # Ignora el 30% superior
-ROI_BOTTOM_MARGIN = 0.70  # Ignora a partir del 70%
+# ── ROI seguimiento de línea ───────────────────────────────────────────────────
+ROI_TOP_MARGIN    = 0.30
+ROI_BOTTOM_MARGIN = 0.70
+
+# ── Detección de intersecciones ────────────────────────────────────────────────
+MARK_LATERAL_WIDTH   = 0.14
+MARK_CENTER_EXCLUDE  = 0.46
+MARK_WARN_TOP        = 0.35
+MARK_WARN_BOTTOM     = 0.48
+MARK_CONFIRM_TOP     = 0.48
+MARK_CONFIRM_BOTTOM  = 0.70
+
+MARK_WARN_DENSITY    = 0.20
+MARK_CONFIRM_DENSITY = 0.35
+MARK_CONFIRM_FRAMES  = 4
+MARK_COOLDOWN_MS     = 1000
 
 
 class LineFollower:
@@ -32,45 +47,50 @@ class LineFollower:
         self.serial_port  = serial_port
         self.baud_rate    = baud_rate
 
-        print(f"Abriendo cámara {self.camera_index} (Modo de Selección Automática)...")
-        # ── SOLUCIÓN CÁMARA USB: Quitamos el backend rígido para forzar compatibilidad ──
-        self.camera = cv2.VideoCapture(self.camera_index)
-        
+        print(f"Abriendo cámara {self.camera_index}...")
+        backend = cv2.CAP_V4L2 if platform.system() == "Linux" else cv2.CAP_DSHOW
+        self.camera = cv2.VideoCapture(self.camera_index, backend)
+
+        if not self.camera.isOpened():
+            print("Reintentando sin backend forzado...")
+            self.camera = cv2.VideoCapture(self.camera_index)
+
         if not self.camera.isOpened():
             print(f"ERROR: No se pudo abrir la cámara {self.camera_index}.")
             sys.exit(1)
 
-        # Configuración de rendimiento de la cámara
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.camera.set(cv2.CAP_PROP_FPS,          CAMERA_FPS)
-        self.camera.set(cv2.CAP_PROP_EXPOSURE, -5) # Forzar exposición baja anti-reflejos
+        self.camera.set(cv2.CAP_PROP_BUFFERSIZE,   1)
+        self.camera.set(cv2.CAP_PROP_EXPOSURE,     -5)
 
-        print("Calentando sensor dinámicamente...")
-        for _ in range(20):
-            ret, _ = self.camera.read()
-            if ret: 
-                break 
+        ret, _ = self.camera.read()
+        if not ret:
+            print("ERROR: No se pudo leer el primer frame.")
+            sys.exit(1)
+        print("Cámara lista.")
 
-        self.serial_conectado = False
-        self.arduino          = None
+        self.serial_conectado    = False
+        self.arduino             = None
         self.alignment_threshold = ALIGNMENT_THRESHOLD_PX
 
-        # Estado para evitar ráfagas repetidas del mismo cruce (Mapeo por flancos)
-        self.mark_left_active = False
-        self.mark_right_active = False
+        self._left_buf       = deque(maxlen=MARK_CONFIRM_FRAMES)
+        self._right_buf      = deque(maxlen=MARK_CONFIRM_FRAMES)
+        self._last_mark_time = 0.0
+        self._warn_sent      = False
 
         self._setup_serial()
 
     def _setup_serial(self):
         try:
-            self.arduino = serial.Serial(self.serial_port, self.baud_rate, timeout=0.5)
-            time.sleep(2)
+            self.arduino = serial.Serial(self.serial_port, self.baud_rate, timeout=0.1)
+            time.sleep(1.5)
             self.serial_conectado = True
             print(f"ESP32 conectado en {self.serial_port} @ {self.baud_rate} baud")
         except Exception as e:
             self.serial_conectado = False
-            print(f"ESP32 no detectado en {self.serial_port}: {e}\nModo simulacion activo...")
+            print(f"ESP32 no detectado: {e}\nModo simulacion activo...")
 
     def send_command(self, command: str):
         if self.serial_conectado and self.arduino:
@@ -84,110 +104,101 @@ class LineFollower:
     def send_error(self, error: float):
         if self.serial_conectado and self.arduino:
             try:
-                # 1. Aseguramos que el error sea tratado rigurosamente como flotante
-                val_error = float(error)
-                
-                # 2. Construimos el string con una estructura limpia
-                mensaje = f"ERROR:{val_error:.2f}\n"
-                
-                # 3. Enviamos al puerto serial de forma segura
-                self.arduino.write(mensaje.encode("utf-8"))
-                
-                # 4. Print de diagnóstico limpio para telemetría
-                print(f"-> [SERIAL] Error enviado: {val_error:+.2f} px")
-                
-            except (ValueError, TypeError) as e:
-                # Captura si por alguna razón 'error' no era un número válido
-                print(f"[VISIÓN ERROR] Dato de error inválido recibido: {error} ({e})")
+                self.arduino.write(f"ERROR:{float(error):.2f}\n".encode("utf-8"))
             except Exception as e:
-                # Captura problemas físicos del puerto (desconexiones o saturación)
-                print(f"[SERIAL ERROR] No se pudo escribir en el puerto: {e}")
+                print(f"[SERIAL ERROR] {e}")
         else:
-            print(f"[SIM] Error simulado: {error:.2f} px")
+            print(f"[SIM] Error: {error:.2f} px")
 
     def process_frame(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (15, 15), 0)
         _, mask = cv2.threshold(blurred, 90, 255, cv2.THRESH_BINARY_INV)
-        
-        kernel = np.ones(MASK_KERNEL_SIZE, np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel) 
-        return mask
+        kernel  = np.ones(MASK_KERNEL_SIZE, np.uint8)
+        return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    def get_contour_center(self, mask, frame_width, frame_height) -> tuple[float | None, tuple[int, int] | None, list]:
+    def get_contour_center(self, mask, frame_width, frame_height):
         y_start = int(frame_height * ROI_TOP_MARGIN)
         y_end   = int(frame_height * ROI_BOTTOM_MARGIN)
-        
+
         roi_mask = np.zeros_like(mask)
         roi_mask[y_start:y_end, :] = mask[y_start:y_end, :]
-        
+
         contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None, None, []
-            
-        largest_contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest_contour) < 200:
+
+        largest = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(largest) < 200:
             return None, None, []
-            
-        M = cv2.moments(largest_contour)
+
+        M = cv2.moments(largest)
         if M["m00"] == 0:
             return None, None, []
-            
+
         cx = int(M["m10"] / M["m00"])
         cy = int(M["m01"] / M["m00"])
-        
-        center_x = frame_width // 2
-        error = float(cx - center_x)
-        return error, (cx, cy), largest_contour
+        return float(cx - frame_width // 2), (cx, cy), largest
 
     def detect_lateral_markers(self, mask):
         height, width = mask.shape
-        y_start = int(height * ROI_TOP_MARGIN)
-        y_end   = int(height * ROI_BOTTOM_MARGIN)
-        margin_x = int(width * 0.15)
-        
-        roi_left  = mask[y_start:y_end, 0:margin_x]
-        roi_right = mask[y_start:y_end, width-margin_x:width]
-        
-        left_detected  = (np.sum(roi_left > 0) / roi_left.size) > 0.35
-        right_detected = (np.sum(roi_right > 0) / roi_right.size) > 0.35
-        return left_detected, right_detected, y_start, y_end, margin_x
+        lateral_w = int(width * MARK_LATERAL_WIDTH)
+        center_x  = width // 2
+        excl_w    = int(width * MARK_CENTER_EXCLUDE)
+
+        x_left_end    = min(lateral_w, center_x - excl_w)
+        x_right_start = max(width - lateral_w, center_x + excl_w)
+
+        if x_left_end <= 0 or x_right_start >= width:
+            return False, False, int(height * MARK_WARN_TOP), int(height * MARK_CONFIRM_BOTTOM), lateral_w
+
+        yw_start = int(height * MARK_WARN_TOP)
+        yw_end   = int(height * MARK_WARN_BOTTOM)
+        yc_start = int(height * MARK_CONFIRM_TOP)
+        yc_end   = int(height * MARK_CONFIRM_BOTTOM)
+
+        roi_warn_l    = mask[yw_start:yw_end, 0:x_left_end]
+        roi_warn_r    = mask[yw_start:yw_end, x_right_start:width]
+        roi_confirm_l = mask[yc_start:yc_end, 0:x_left_end]
+        roi_confirm_r = mask[yc_start:yc_end, x_right_start:width]
+
+        warn_left  = (np.sum(roi_warn_l > 0)    / roi_warn_l.size)    > MARK_WARN_DENSITY
+        warn_right = (np.sum(roi_warn_r > 0)    / roi_warn_r.size)    > MARK_WARN_DENSITY
+        conf_left  = (np.sum(roi_confirm_l > 0) / roi_confirm_l.size) > MARK_CONFIRM_DENSITY
+        conf_right = (np.sum(roi_confirm_r > 0) / roi_confirm_r.size) > MARK_CONFIRM_DENSITY
+
+        self._left_buf.append(conf_left)
+        self._right_buf.append(conf_right)
+
+        left_confirmed  = len(self._left_buf)  == MARK_CONFIRM_FRAMES and all(self._left_buf)
+        right_confirmed = len(self._right_buf) == MARK_CONFIRM_FRAMES and all(self._right_buf)
+
+        warn      = (warn_left or warn_right) and not (left_confirmed or right_confirmed)
+        confirmed = left_confirmed or right_confirmed
+
+        return warn, confirmed, yw_start, yc_end, lateral_w
+
+    def _cooldown_ok(self) -> bool:
+        return (time.time() * 1000 - self._last_mark_time) > MARK_COOLDOWN_MS
 
     def run(self):
-        print("\n--- Seguidor de Linea Optimizado (Modo Transmisión Pura) ---")
+        print("\n--- Seguidor de Linea activo ---")
         while True:
             ret, frame = self.camera.read()
             if not ret:
                 break
 
-            frame = cv2.flip(frame, 1)
-            mask  = self.process_frame(frame)
+            frame         = cv2.flip(frame, 1)
+            mask          = self.process_frame(frame)
             height, width = frame.shape[:2]
-            center_x = width // 2
+            center_x      = width // 2
 
-            # 1. Obtener error de la línea central
+            # ── 1. Error de línea → PID ───────────────────────────────────────
             error, centroid, main_contour = self.get_contour_center(mask, width, height)
 
-            # 2. Obtener estado de los ROIs laterales para intersecciones
-            left_on, right_on, y_start, y_end, margin_x = self.detect_lateral_markers(mask)
-
-            # Enviar marcas laterales al ESP32 solo en el flanco de subida (detección inicial)
-            if left_on and not self.mark_left_active:
-                self.send_command("MARK:L")
-                print("-> [VISIÓN] MARK:L")
-            self.mark_left_active = left_on
-
-            if right_on and not self.mark_right_active:
-                self.send_command("MARK:R")
-                print("-> [VISIÓN] MARK:R")
-            self.mark_right_active = right_on
-
-            # 3. ── FLUJO CORRECTO: Envío de error directo sin importar las marcas ──
             if error is not None:
                 self.send_error(error)
-                
-                # HUD en pantalla: Estado del error
-                alineado = abs(error) <= self.alignment_threshold
+                alineado  = abs(error) <= self.alignment_threshold
                 color_txt = (0, 255, 0) if alineado else (0, 165, 255)
                 cv2.putText(frame, f"Error: {error:+.1f}px", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_txt, 2)
@@ -195,14 +206,41 @@ class LineFollower:
                 cv2.putText(frame, "LINEA PERDIDA", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-            # ── Dibujar HUD Visual de Competencia ──
-            cv2.line(frame, (0, y_start), (width, y_start), (0, 255, 255), 1) 
-            cv2.line(frame, (0, y_end), (width, y_end), (0, 255, 255), 1) 
-            cv2.line(frame, (center_x, 0), (center_x, height), (255, 0, 0), 1)
+            # ── 2. Detección de intersecciones ────────────────────────────────
+            warn, confirmed, y_start, y_end, lateral_w = self.detect_lateral_markers(mask)
 
-            # Cajas de detección lateral (Verde si detecta marca, Rojo si está vacía)
-            cv2.rectangle(frame, (0, y_start), (margin_x, y_end), (0, 255, 0) if left_on else (0, 0, 255), 2)
-            cv2.rectangle(frame, (width - margin_x, y_start), (width, y_end), (0, 255, 0) if right_on else (0, 0, 255), 2)
+            if warn and not self._warn_sent:
+                self.send_command("SLOW")
+                self._warn_sent = True
+                print("-> [VISION] SLOW")
+
+            if confirmed and self._cooldown_ok():
+                self._last_mark_time = time.time() * 1000
+                self._warn_sent      = False
+                self.send_command("MARK")
+                print("-> [VISION] MARK")
+
+            if not warn and not confirmed:
+                self._warn_sent = False
+
+            # ── 3. HUD ────────────────────────────────────────────────────────
+            warn_y = int(height * MARK_WARN_BOTTOM)
+
+            cv2.line(frame, (0, y_start),  (width, y_start),  (0, 255, 255), 1)
+            cv2.line(frame, (0, y_end),    (width, y_end),    (0, 255, 255), 1)
+            cv2.line(frame, (0, warn_y),   (width, warn_y),   (0, 200, 200), 1)
+            cv2.line(frame, (center_x, 0), (center_x, height),(255, 0, 0),   1)
+
+            col = (0, 255, 0) if confirmed else ((0, 255, 255) if warn else (0, 0, 255))
+            cv2.rectangle(frame, (0, y_start),               (lateral_w, y_end), col, 2)
+            cv2.rectangle(frame, (width - lateral_w, y_start),(width, y_end),     col, 2)
+
+            if confirmed:
+                cv2.putText(frame, "INTERSECCION", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            elif warn:
+                cv2.putText(frame, "FRENANDO", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
             if len(main_contour) > 0 and centroid:
                 cv2.drawContours(frame, [main_contour], -1, (255, 0, 255), 2)
@@ -211,8 +249,7 @@ class LineFollower:
             cv2.imshow("Camara Robot - Vista Principal", frame)
             cv2.imshow("Mascara Threshold", mask)
 
-            # Salida limpia con la tecla de escape configurada
-            key = cv2.waitKey(1) & 0xFF
+            key      = cv2.waitKey(1) & 0xFF
             exit_val = ord(EXIT_KEY) if isinstance(EXIT_KEY, str) else EXIT_KEY
             if key == exit_val:
                 self.send_command("S")
